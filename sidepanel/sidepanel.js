@@ -77,6 +77,12 @@ const rowInbucketHost = document.getElementById('row-inbucket-host');
 const inputInbucketHost = document.getElementById('input-inbucket-host');
 const rowInbucketMailbox = document.getElementById('row-inbucket-mailbox');
 const inputInbucketMailbox = document.getElementById('input-inbucket-mailbox');
+const rowCfTempHost = document.getElementById('row-cf-temp-host');
+const inputCfTempHost = document.getElementById('input-cf-temp-host');
+const rowCfTempToken = document.getElementById('row-cf-temp-token');
+const inputCfTempToken = document.getElementById('input-cf-temp-token');
+const rowCfTempMailbox = document.getElementById('row-cf-temp-mailbox');
+const inputCfTempMailbox = document.getElementById('input-cf-temp-mailbox');
 const rowCfDomain = document.getElementById('row-cf-domain');
 const selectCfDomain = document.getElementById('select-cf-domain');
 const inputCfDomain = document.getElementById('input-cf-domain');
@@ -612,6 +618,9 @@ function collectSettingsPayload() {
     emailGenerator: selectEmailGenerator.value,
     inbucketHost: inputInbucketHost.value.trim(),
     inbucketMailbox: inputInbucketMailbox.value.trim(),
+    cfTempHost: inputCfTempHost.value.trim(),
+    cfTempToken: inputCfTempToken.value,
+    cfTempMailbox: inputCfTempMailbox.value.trim(),
     cloudflareDomain: selectedCloudflareDomain,
     cloudflareDomains: domains,
     autoRunSkipFailures: inputAutoSkipFailures.checked,
@@ -853,6 +862,9 @@ function applySettingsState(state) {
   selectEmailGenerator.value = state?.emailGenerator || 'duck';
   inputInbucketHost.value = state?.inbucketHost || '';
   inputInbucketMailbox.value = state?.inbucketMailbox || '';
+  inputCfTempHost.value = state?.cfTempHost || '';
+  inputCfTempToken.value = state?.cfTempToken || '';
+  inputCfTempMailbox.value = state?.cfTempMailbox || '';
   renderCloudflareDomainOptions(state?.cloudflareDomain || '');
   setCloudflareDomainEditMode(false, { clearInput: true });
   inputAutoSkipFailures.checked = Boolean(state?.autoRunSkipFailures);
@@ -1174,9 +1186,13 @@ function updateMailProviderUI() {
   const useInbucket = selectMailProvider.value === 'inbucket';
   const useHotmail = selectMailProvider.value === 'hotmail-api';
   const useEmailGenerator = !useHotmail;
+  const useCfTemp = selectMailProvider.value === 'cloudflare-temp';
   updateMailLoginButtonState();
   rowInbucketHost.style.display = useInbucket ? '' : 'none';
   rowInbucketMailbox.style.display = useInbucket ? '' : 'none';
+  rowCfTempHost.style.display = useCfTemp ? '' : 'none';
+  rowCfTempToken.style.display = useCfTemp ? '' : 'none';
+  rowCfTempMailbox.style.display = useCfTemp ? '' : 'none';
   const useCloudflare = selectEmailGenerator.value === 'cloudflare';
   const showCloudflareDomain = useEmailGenerator && useCloudflare;
   if (rowEmailGenerator) {
@@ -2357,6 +2373,30 @@ inputInbucketHost.addEventListener('input', () => {
   scheduleSettingsAutoSave();
 });
 inputInbucketHost.addEventListener('blur', () => {
+  saveSettings({ silent: true }).catch(() => { });
+});
+
+inputCfTempHost.addEventListener('input', () => {
+  markSettingsDirty(true);
+  scheduleSettingsAutoSave();
+});
+inputCfTempHost.addEventListener('blur', () => {
+  saveSettings({ silent: true }).catch(() => { });
+});
+
+inputCfTempToken.addEventListener('input', () => {
+  markSettingsDirty(true);
+  scheduleSettingsAutoSave();
+});
+inputCfTempToken.addEventListener('blur', () => {
+  saveSettings({ silent: true }).catch(() => { });
+});
+
+inputCfTempMailbox.addEventListener('input', () => {
+  markSettingsDirty(true);
+  scheduleSettingsAutoSave();
+});
+inputCfTempMailbox.addEventListener('blur', () => {
   saveSettings({ silent: true }).catch(() => { });
 });
 

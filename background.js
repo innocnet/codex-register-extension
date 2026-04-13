@@ -26,6 +26,7 @@ const getHotmailMailApiRequestConfig = getHotmailGraphRequestConfig;
 const LOG_PREFIX = '[MultiPage:bg]';
 const DUCK_AUTOFILL_URL = 'https://duckduckgo.com/email/settings/autofill';
 const HOTMAIL_PROVIDER = 'hotmail-api';
+const CLOUDFLARE_TEMP_PROVIDER = 'cloudflare-temp';
 const HOTMAIL_MAILBOXES = ['INBOX', 'Junk'];
 const STOP_ERROR_MESSAGE = '流程已被用户停止。';
 const HUMAN_STEP_DELAY_MIN = 700;
@@ -64,6 +65,9 @@ const PERSISTED_SETTING_DEFAULTS = {
   emailGenerator: 'duck', // 注册邮箱生成方式：duck / cloudflare。
   inbucketHost: '', // 仅当 mailProvider 为 inbucket 时填写 Inbucket 地址，其他情况保持为空。
   inbucketMailbox: '', // 仅当 mailProvider 为 inbucket 时填写邮箱名，其他情况保持为空。
+  cfTempHost: '', // 仅当 mailProvider 为 cloudflare-temp 时填写服务地址，如 https://mail.yourdomain.com。
+  cfTempToken: '', // Cloudflare 临时邮箱 API Token（可选）。
+  cfTempMailbox: '', // Cloudflare 临时邮箱收件地址，DuckDuckGo 转发目标邮箱。
   cloudflareDomain: '', // 仅当 emailGenerator=cloudflare 时填写自定义域名。
   cloudflareDomains: [], // Cloudflare 可选域名列表。
   hotmailAccounts: [],
@@ -155,6 +159,7 @@ function normalizeMailProvider(value = '') {
     case '163-vip':
     case 'qq':
     case 'inbucket':
+    case CLOUDFLARE_TEMP_PROVIDER:
       return normalized;
     default:
       return PERSISTED_SETTING_DEFAULTS.mailProvider;
@@ -224,6 +229,12 @@ function normalizePersistentSettingValue(key, value) {
       return String(value || '').trim();
     case 'inbucketMailbox':
       return String(value || '').trim();
+    case 'cfTempHost':
+      return String(value || '').trim();
+    case 'cfTempToken':
+      return String(value || '');
+    case 'cfTempMailbox':
+      return String(value || '').trim().toLowerCase();
     case 'cloudflareDomain':
       return normalizeCloudflareDomain(value);
     case 'cloudflareDomains':
@@ -489,6 +500,35 @@ function isHotmailProvider(stateOrProvider) {
     ? stateOrProvider
     : stateOrProvider?.mailProvider;
   return provider === HOTMAIL_PROVIDER;
+}
+
+function isCloudflareTempProvider(stateOrProvider) {
+  const provider = typeof stateOrProvider === 'string'
+    ? stateOrProvider
+    : stateOrProvider?.mailProvider;
+  return provider === CLOUDFLARE_TEMP_PROVIDER;
+}
+
+function isBackgroundPolledProvider(mail) {
+  return mail.provider === HOTMAIL_PROVIDER || mail.provider === CLOUDFLARE_TEMP_PROVIDER;
+}
+
+function normalizeCloudflareTempOrigin(rawValue) {
+  const value = (rawValue || '').trim();
+  if (!value) return '';
+  const candidate = /^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(value) ? value : `https://${value}`;
+  try {
+    return new URL(candidate).origin;
+  } catch {
+    return '';
+  }
+}
+
+function parseCfTempTimestamp(value) {
+  if (!value) return 0;
+  if (typeof value === 'number') return value > 1e12 ? value : value * 1000;
+  const ts = Date.parse(value);
+  return Number.isFinite(ts) ? ts : 0;
 }
 
 async function syncHotmailAccounts(accounts) {
@@ -1054,6 +1094,63 @@ async function pollHotmailVerificationCode(step, state, pollPayload = {}) {
   }
 
   throw lastError || new Error(`步骤 ${step}：未在 Hotmail 收件箱中找到新的匹配验证码。`);
+}
+
+async function pollCloudflareTempVerificationCode(step, state, pollPayload = {}) {
+  const host = normalizeCloudflareTempOrigin(state.cfTempHost);
+  const rawToken = (state.cfTempToken || '').trim();
+  const token = rawToken.replace(/^Bearer\s+/i, '');
+
+  if (!host) throw new Error('Cloudflare 临时邮箱：服务地址未配置。');
+
+  const maxAttempts = Number(pollPayload.maxAttempts) || 12;
+  const intervalMs = Number(pollPayload.intervalMs) || 5000;
+  const afterTimestamp = Number(pollPayload.filterAfterTimestamp) || 0;
+  const excludeSet = new Set((pollPayload.excludeCodes || []).filter(Boolean));
+
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    throwIfStopped();
+    try {
+      await addLog(`步骤 ${step}：轮询 Cloudflare 临时邮箱（${attempt}/${maxAttempts}）...`, 'info');
+      const resp = await fetch(`${host}/api/mails?limit=20&offset=0`, { headers });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      const mails = Array.isArray(data) ? data
+        : (Array.isArray(data.results) ? data.results
+        : (Array.isArray(data.mails) ? data.mails : []));
+
+      for (const mail of mails) {
+        const receivedAt = parseCfTempTimestamp(mail.created_at || mail.date || mail.receivedAt || '');
+        if (afterTimestamp && receivedAt < afterTimestamp) continue;
+        const combined = [
+          String(mail.from || mail.sender || ''),
+          String(mail.subject || ''),
+          String(mail.text || mail.body || mail.bodyPreview || mail.html || ''),
+        ].join(' ');
+        const lower = combined.toLowerCase();
+        const senderMatch = (pollPayload.senderFilters || []).some(f => lower.includes(f.toLowerCase()));
+        const subjectMatch = (pollPayload.subjectFilters || []).some(f => lower.includes(f.toLowerCase()));
+        if (!senderMatch && !subjectMatch) continue;
+        const code = extractVerificationCodeFromMessage({ bodyPreview: combined, body: { content: combined } });
+        if (!code || excludeSet.has(code)) continue;
+        await addLog(`步骤 ${step}：已在 Cloudflare 临时邮箱中找到验证码：${code}`, 'ok');
+        return { ok: true, code, emailTimestamp: receivedAt || Date.now() };
+      }
+
+      lastError = new Error(`步骤 ${step}：暂无匹配验证码（${attempt}/${maxAttempts}）。`);
+      await addLog(lastError.message, attempt === maxAttempts ? 'warn' : 'info');
+    } catch (err) {
+      if (isStopError(err)) throw err;
+      lastError = err;
+      await addLog(`步骤 ${step}：Cloudflare 临时邮箱轮询失败：${err.message}`, 'warn');
+    }
+    if (attempt < maxAttempts) await sleepWithStop(intervalMs);
+  }
+  throw lastError || new Error(`步骤 ${step}：Cloudflare 临时邮箱超时，未找到验证码。`);
 }
 
 // ============================================================
@@ -3764,6 +3861,13 @@ function getMailConfig(state) {
       injectSource: 'inbucket-mail',
     };
   }
+  if (provider === CLOUDFLARE_TEMP_PROVIDER) {
+    const host = normalizeCloudflareTempOrigin(state.cfTempHost);
+    const mailbox = (state.cfTempMailbox || '').trim();
+    if (!host) return { error: 'Cloudflare 临时邮箱：服务地址未配置。' };
+    if (!mailbox) return { error: 'Cloudflare 临时邮箱：收件地址未配置。' };
+    return { provider: CLOUDFLARE_TEMP_PROVIDER, label: 'Cloudflare 临时邮箱' };
+  }
   return { source: 'qq-mail', url: 'https://wx.mail.qq.com/', label: 'QQ 邮箱' };
 }
 
@@ -3853,6 +3957,12 @@ async function pollFreshVerificationCode(step, state, mail, pollOverrides = {}) 
     return pollHotmailVerificationCode(step, state, {
       ...getVerificationPollPayload(step, state),
       ...hotmailPollConfig,
+      ...pollOverrides,
+    });
+  }
+  if (mail.provider === CLOUDFLARE_TEMP_PROVIDER) {
+    return pollCloudflareTempVerificationCode(step, state, {
+      ...getVerificationPollPayload(step, state),
       ...pollOverrides,
     });
   }
@@ -4066,7 +4176,7 @@ async function executeStep4(state) {
   }
 
   throwIfStopped();
-  if (mail.provider === HOTMAIL_PROVIDER) {
+  if (isBackgroundPolledProvider(mail)) {
     await addLog(`步骤 4：正在通过 ${mail.label} 轮询验证码...`);
   } else {
     await addLog(`步骤 4：正在打开${mail.label}...`);
@@ -4092,8 +4202,8 @@ async function executeStep4(state) {
   }
 
   await resolveVerificationStep(4, state, mail, {
-    filterAfterTimestamp: mail.provider === HOTMAIL_PROVIDER ? undefined : stepStartedAt,
-    requestFreshCodeFirst: mail.provider === HOTMAIL_PROVIDER ? false : true,
+    filterAfterTimestamp: isBackgroundPolledProvider(mail) ? undefined : stepStartedAt,
+    requestFreshCodeFirst: isBackgroundPolledProvider(mail) ? false : true,
   });
   return;
 }
@@ -4196,7 +4306,7 @@ async function runStep7Attempt(state) {
   }
 
   throwIfStopped();
-  if (mail.provider === HOTMAIL_PROVIDER) {
+  if (isBackgroundPolledProvider(mail)) {
     await addLog(`步骤 7：正在通过 ${mail.label} 轮询验证码...`);
   } else {
     await addLog(`步骤 7：正在打开${mail.label}...`);
@@ -4221,8 +4331,8 @@ async function runStep7Attempt(state) {
   }
 
   await resolveVerificationStep(7, state, mail, {
-    filterAfterTimestamp: mail.provider === HOTMAIL_PROVIDER ? undefined : stepStartedAt,
-    requestFreshCodeFirst: mail.provider === HOTMAIL_PROVIDER ? false : true,
+    filterAfterTimestamp: isBackgroundPolledProvider(mail) ? undefined : stepStartedAt,
+    requestFreshCodeFirst: isBackgroundPolledProvider(mail) ? false : true,
   });
 }
 

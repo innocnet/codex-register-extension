@@ -136,6 +136,7 @@
             <option value="163-vip">163 VIP 邮箱 (webmail.vip.163.com)</option>
             <option value="qq">QQ 邮箱 (wx.mail.qq.com)</option>
             <option value="inbucket">Inbucket（自定义主机）</option>
+            <option value="cloudflare-temp">Cloudflare 临时邮箱（API）</option>
           </select>
           <button id="btn-mail-login" class="btn btn-outline btn-sm" type="button" disabled>登录</button>
         </div>
@@ -163,6 +164,18 @@
       <div class="data-row" id="row-inbucket-mailbox" style="display:none;">
         <span class="data-label">邮箱名</span>
         <input type="text" id="input-inbucket-mailbox" class="data-input" placeholder="例如 zju2001" />
+      </div>
+      <div class="data-row" id="row-cf-temp-host" style="display:none;">
+        <span class="data-label">CF 服务地址</span>
+        <input type="text" id="input-cf-temp-host" class="data-input" placeholder="https://mail.yourdomain.com" />
+      </div>
+      <div class="data-row" id="row-cf-temp-token" style="display:none;">
+        <span class="data-label">CF Token</span>
+        <input type="password" id="input-cf-temp-token" class="data-input" placeholder="API Token（可选，无需认证留空）" />
+      </div>
+      <div class="data-row" id="row-cf-temp-mailbox" style="display:none;">
+        <span class="data-label">CF 收件地址</span>
+        <input type="text" id="input-cf-temp-mailbox" class="data-input" placeholder="DuckDuckGo 转发目标，如 inbox@yourdomain.com" />
       </div>
       <div class="data-row">
         <span class="data-label">注册邮箱</span>
