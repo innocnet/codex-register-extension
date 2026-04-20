@@ -527,7 +527,12 @@ function normalizeCloudflareTempOrigin(rawValue) {
 function parseCfTempTimestamp(value) {
   if (!value) return 0;
   if (typeof value === 'number') return value > 1e12 ? value : value * 1000;
-  const ts = Date.parse(value);
+  // created_at 是 UTC 时间（如 "2026-04-14 01:00:56"），加 Z 强制按 UTC 解析
+  // 否则 JS 会把它当本地时间，中国 UTC+8 会少 8 小时导致被时间过滤掉
+  const normalized = typeof value === 'string'
+    ? value.trim().replace(' ', 'T').replace(/([^Z])$/, '$1Z')
+    : value;
+  const ts = Date.parse(normalized);
   return Number.isFinite(ts) ? ts : 0;
 }
 
@@ -1096,6 +1101,19 @@ async function pollHotmailVerificationCode(step, state, pollPayload = {}) {
   throw lastError || new Error(`步骤 ${step}：未在 Hotmail 收件箱中找到新的匹配验证码。`);
 }
 
+function stripHtmlTags(html) {
+  return String(html || '')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 async function pollCloudflareTempVerificationCode(step, state, pollPayload = {}) {
   const host = normalizeCloudflareTempOrigin(state.cfTempHost);
   const rawToken = (state.cfTempToken || '').trim();
@@ -1103,10 +1121,15 @@ async function pollCloudflareTempVerificationCode(step, state, pollPayload = {})
 
   if (!host) throw new Error('Cloudflare 临时邮箱：服务地址未配置。');
 
-  const maxAttempts = Number(pollPayload.maxAttempts) || 12;
-  const intervalMs = Number(pollPayload.intervalMs) || 5000;
+  // 使用更长的默认轮询时间，忽略上层传入的较小值
+  const maxAttempts = Math.max(Number(pollPayload.maxAttempts) || 0, 30);
+  const intervalMs = 30000; // 每次间隔 30 秒，30 次共约 15 分钟
   const afterTimestamp = Number(pollPayload.filterAfterTimestamp) || 0;
   const excludeSet = new Set((pollPayload.excludeCodes || []).filter(Boolean));
+
+  // CF 临时邮箱只在第 20 次时重发一次（共最多重发 1 次），避免触发 OpenAI max_check_attempts 限制
+  const resendEveryN = 20;
+  const maxResends = 1;
 
   const headers = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -1114,6 +1137,19 @@ async function pollCloudflareTempVerificationCode(step, state, pollPayload = {})
   let lastError = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     throwIfStopped();
+
+    // 最多重发 maxResends 次，每 resendEveryN 轮触发一次，避免触发 OpenAI max_check_attempts
+    const resendIndex = Math.floor((attempt - 1) / resendEveryN);
+    if (attempt > 1 && (attempt - 1) % resendEveryN === 0 && resendIndex <= maxResends) {
+      try {
+        await addLog(`步骤 ${step}：等待较久，尝试第 ${resendIndex} 次重新请求验证码...`, 'warn');
+        await requestVerificationCodeResend(step);
+      } catch (resendErr) {
+        if (isStopError(resendErr)) throw resendErr;
+        await addLog(`步骤 ${step}：重新请求验证码失败：${resendErr.message}`, 'warn');
+      }
+    }
+
     try {
       await addLog(`步骤 ${step}：轮询 Cloudflare 临时邮箱（${attempt}/${maxAttempts}）...`, 'info');
       const resp = await fetch(`${host}/api/mails?limit=20&offset=0`, { headers });
@@ -1123,19 +1159,43 @@ async function pollCloudflareTempVerificationCode(step, state, pollPayload = {})
         : (Array.isArray(data.results) ? data.results
         : (Array.isArray(data.mails) ? data.mails : []));
 
+      // 目标 Duck 邮箱别名（用于多任务时区分各自的验证码邮件）
+      const targetEmail = (pollPayload.targetEmail || '').toLowerCase().trim();
+      await addLog(`步骤 ${step}：CF邮箱共 ${mails.length} 封，目标=${targetEmail || '不限'} 时间阈值=${afterTimestamp ? new Date(afterTimestamp).toLocaleTimeString() : '无'}`, 'info');
       for (const mail of mails) {
         const receivedAt = parseCfTempTimestamp(mail.created_at || mail.date || mail.receivedAt || '');
         if (afterTimestamp && receivedAt < afterTimestamp) continue;
-        const combined = [
-          String(mail.from || mail.sender || ''),
-          String(mail.subject || ''),
-          String(mail.text || mail.body || mail.bodyPreview || mail.html || ''),
-        ].join(' ');
-        const lower = combined.toLowerCase();
-        const senderMatch = (pollPayload.senderFilters || []).some(f => lower.includes(f.toLowerCase()));
-        const subjectMatch = (pollPayload.subjectFilters || []).some(f => lower.includes(f.toLowerCase()));
-        if (!senderMatch && !subjectMatch) continue;
-        const code = extractVerificationCodeFromMessage({ bodyPreview: combined, body: { content: combined } });
+
+        // API 只返回 raw 字段（完整 RFC 2822 邮件），从中提取所有内容
+        const rawEmail = String(mail.raw || '');
+        const cleanRaw = stripHtmlTags(rawEmail);
+
+        const lower = rawEmail.toLowerCase();
+
+        // 多任务隔离：通过 Duck-Original-To / To 头匹配本任务的 Duck 别名
+        // targetEmail = state.email = step2 生成的 Duck 别名（如 xxx@duck.com）
+        // 该别名出现在 raw 邮件头的 Duck-Original-To / To 字段中
+        if (targetEmail) {
+          const toHeaderMatch = /^(?:duck-original-to|to):[ \t]*(.+)$/im.exec(rawEmail);
+          const toValue = toHeaderMatch ? toHeaderMatch[1].toLowerCase() : lower;
+          if (!toValue.includes(targetEmail)) {
+            await addLog(`步骤 ${step}：邮件 ${mail.id} To头(${toHeaderMatch?.[1]?.trim()}) 不含 ${targetEmail}，跳过`, 'info');
+            continue;
+          }
+        }
+
+        const senderFilters = pollPayload.senderFilters || [];
+        const subjectFilters = pollPayload.subjectFilters || [];
+        const senderMatch = senderFilters.length === 0 || senderFilters.some(f => lower.includes(f.toLowerCase()));
+        const subjectMatch = subjectFilters.length === 0 || subjectFilters.some(f => lower.includes(f.toLowerCase()));
+        await addLog(`步骤 ${step}：邮件 ${mail.id} rawLen=${rawEmail.length} senderMatch=${senderMatch} subjectMatch=${subjectMatch}`, 'info');
+        if (!senderMatch && !subjectMatch) {
+          await addLog(`步骤 ${step}：邮件 ${mail.id} 发件人/主题均不匹配过滤器，跳过`, 'info');
+          continue;
+        }
+
+        const code = HotmailUtils.extractVerificationCode(cleanRaw);
+        await addLog(`步骤 ${step}：邮件 ${mail.id} 提取验证码="${code || '无'}"`, 'info');
         if (!code || excludeSet.has(code)) continue;
         await addLog(`步骤 ${step}：已在 Cloudflare 临时邮箱中找到验证码：${code}`, 'ok');
         return { ok: true, code, emailTimestamp: receivedAt || Date.now() };
@@ -4202,7 +4262,7 @@ async function executeStep4(state) {
   }
 
   await resolveVerificationStep(4, state, mail, {
-    filterAfterTimestamp: isBackgroundPolledProvider(mail) ? undefined : stepStartedAt,
+    filterAfterTimestamp: mail.provider === HOTMAIL_PROVIDER ? undefined : stepStartedAt,
     requestFreshCodeFirst: isBackgroundPolledProvider(mail) ? false : true,
   });
   return;
@@ -4213,17 +4273,36 @@ async function executeStep4(state) {
 // ============================================================
 
 async function executeStep5(state) {
-  const { firstName, lastName } = generateRandomName();
-  const { year, month, day } = generateRandomBirthday();
+  const MAX_STEP5_ATTEMPTS = 3;
 
-  await addLog(`步骤 5：已生成姓名 ${firstName} ${lastName}，生日 ${year}-${month}-${day}`);
+  for (let attempt = 1; attempt <= MAX_STEP5_ATTEMPTS; attempt++) {
+    const { firstName, lastName } = generateRandomName();
+    const { year, month, day } = generateRandomBirthday();
 
-  await sendToContentScript('signup-page', {
-    type: 'EXECUTE_STEP',
-    step: 5,
-    source: 'background',
-    payload: { firstName, lastName, year, month, day },
-  });
+    if (attempt > 1) {
+      await addLog(`步骤 5：第 ${attempt}/${MAX_STEP5_ATTEMPTS} 次尝试填写姓名和生日...`, 'warn');
+    } else {
+      await addLog(`步骤 5：已生成姓名 ${firstName} ${lastName}，生日 ${year}-${month}-${day}`);
+    }
+
+    const result = await sendToContentScript('signup-page', {
+      type: 'EXECUTE_STEP',
+      step: 5,
+      source: 'background',
+      payload: { firstName, lastName, year, month, day },
+    });
+
+    if (result?.needsRefill) {
+      if (attempt >= MAX_STEP5_ATTEMPTS) {
+        throw new Error('步骤 5：多次提交后服务器仍超时，请稍后手动重试。');
+      }
+      await addLog('步骤 5：服务器超时，稍后重新填写...', 'warn');
+      await sleepWithStop(3000);
+      continue;
+    }
+
+    return;
+  }
 }
 
 // ============================================================
@@ -4331,7 +4410,7 @@ async function runStep7Attempt(state) {
   }
 
   await resolveVerificationStep(7, state, mail, {
-    filterAfterTimestamp: isBackgroundPolledProvider(mail) ? undefined : stepStartedAt,
+    filterAfterTimestamp: mail.provider === HOTMAIL_PROVIDER ? undefined : stepStartedAt,
     requestFreshCodeFirst: isBackgroundPolledProvider(mail) ? false : true,
   });
 }
@@ -4466,12 +4545,40 @@ async function getStep8PageState(tabId, responseTimeoutMs = 1500) {
 async function waitForStep8Ready(tabId, timeoutMs = STEP8_READY_WAIT_TIMEOUT_MS) {
   const start = Date.now();
   let recovered = false;
+  let phonePageRedirected = false;
 
   while (Date.now() - start < timeoutMs) {
     throwIfStopped();
     const pageState = await getStep8PageState(tabId);
     if (pageState?.addPhonePage) {
-      throw new Error('步骤 8：认证页进入了手机号页面，当前不是 OAuth 同意页，无法继续自动授权。');
+      if (!phonePageRedirected) {
+        // 先尝试点跳过按钮
+        await addLog('步骤 8：检测到手机号页面，尝试跳过...', 'warn');
+        const skipResult = await sendToContentScript('signup-page', {
+          type: 'SKIP_ADD_PHONE',
+          step: 8,
+          source: 'background',
+          payload: {},
+        });
+        await sleepWithStop(2000);
+        // 如果跳过按钮不存在（skipResult.ok 但返回 false），直接导航 OAuth URL
+        if (!skipResult?.ok || skipResult?.result === false) {
+          phonePageRedirected = true;
+          const currentState = await getState();
+          const oauthUrl = currentState.oauthUrl;
+          if (oauthUrl) {
+            await addLog('步骤 8：手机号页面无跳过按钮，重新导航 OAuth 授权页...', 'warn');
+            await chrome.tabs.update(tabId, { url: oauthUrl });
+            await sleepWithStop(3000);
+          } else {
+            await addLog('步骤 8：手机号页面无跳过按钮，且无 OAuth 链接，等待手动处理...', 'warn');
+          }
+        }
+      } else {
+        // 已重定向过，继续等待 OAuth 页加载
+        await sleepWithStop(1000);
+      }
+      continue;
     }
     if (pageState?.consentReady) {
       return pageState;
@@ -4599,7 +4706,23 @@ async function waitForStep8ClickEffect(tabId, baselineUrl, timeoutMs = STEP8_CLI
 
     const pageState = await getStep8PageState(tabId);
     if (pageState?.addPhonePage) {
-      throw new Error('步骤 8：点击“继续”后页面跳到了手机号页面，当前流程无法继续自动授权。');
+      await addLog('步骤 8：点击后跳到手机号页面，尝试跳过或重新导航...', 'warn');
+      const skipResult = await sendToContentScript('signup-page', {
+        type: 'SKIP_ADD_PHONE',
+        step: 8,
+        source: 'background',
+        payload: {},
+      });
+      await sleepWithStop(2000);
+      if (!skipResult?.ok || skipResult?.result === false) {
+        const currentState = await getState();
+        if (currentState.oauthUrl) {
+          await addLog('步骤 8：手机号页面无跳过按钮，重新导航 OAuth 授权页...', 'warn');
+          await chrome.tabs.update(tabId, { url: currentState.oauthUrl });
+          await sleepWithStop(3000);
+        }
+      }
+      continue;
     }
     if (pageState === null) {
       if (!recovered) {

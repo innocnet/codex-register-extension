@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(grep -n \"addPhonePage\\\\|add_phone\\\\|phone.*page\\\\|isPhonePage\" /Users/april/coding/codex-oauth-automation-extension/content/*.js)"
     ]
   }
 }

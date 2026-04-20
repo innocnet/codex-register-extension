@@ -14,6 +14,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     || message.type === 'PREPARE_LOGIN_CODE'
     || message.type === 'PREPARE_SIGNUP_VERIFICATION'
     || message.type === 'RESEND_VERIFICATION_CODE'
+    || message.type === 'SKIP_ADD_PHONE'
   ) {
     resetStopState();
     handleCommand(message).then((result) => {
@@ -58,6 +59,8 @@ async function handleCommand(message) {
       return await prepareLoginCodeFlow();
     case 'RESEND_VERIFICATION_CODE':
       return await resendVerificationCode(message.step);
+    case 'SKIP_ADD_PHONE':
+      return await trySkipAddPhonePage();
     case 'STEP8_FIND_AND_CLICK':
       return await step8_findAndClick();
     case 'STEP8_GET_STATE':
@@ -529,6 +532,29 @@ function isAddPhonePageReady() {
   return ADD_PHONE_PAGE_PATTERN.test(getPageTextSnapshot());
 }
 
+async function trySkipAddPhonePage() {
+  if (!isAddPhonePageReady()) return false;
+
+  const SKIP_PATTERN = /maybe\s+later|skip|not\s+now|以后再说|跳过|暂不|稍后/i;
+  const candidates = Array.from(document.querySelectorAll('a, button'));
+  const skipBtn = candidates.find(el => {
+    if (!isVisibleElement(el)) return false;
+    return SKIP_PATTERN.test(el.textContent || '') || SKIP_PATTERN.test(el.getAttribute('aria-label') || '');
+  });
+
+  if (skipBtn) {
+    log('检测到手机号页面，点击跳过按钮...', 'warn');
+    await humanPause(400, 900);
+    simulateClick(skipBtn);
+    await sleep(1500);
+    return true;
+  }
+
+  // 没有跳过按钮，由 background 负责重新导航到 OAuth URL
+  log('检测到手机号页面，未找到跳过按钮，等待 background 重新导航...', 'warn');
+  return false;
+}
+
 function isLoginPage() {
   return /\/log-in(?:[/?#]|$)/i.test(location.pathname || '');
 }
@@ -621,8 +647,9 @@ function getStep5ErrorText() {
   return messages.find((text) => STEP5_SUBMIT_ERROR_PATTERN.test(text)) || '';
 }
 
-async function waitForStep5SubmitOutcome(timeout = 15000) {
+async function waitForStep5SubmitOutcome(timeout = 20000) {
   const start = Date.now();
+  let retryClicked = false;
 
   while (Date.now() - start < timeout) {
     throwIfStopped();
@@ -640,12 +667,40 @@ async function waitForStep5SubmitOutcome(timeout = 15000) {
       return { success: true };
     }
 
+    // 检测 operation timed out 错误页，自动点"重试"（只点一次）
+    if (!retryClicked) {
+      const text = getPageTextSnapshot();
+      const isTimeoutPage = AUTH_TIMEOUT_ERROR_DETAIL_PATTERN.test(text)
+        || (AUTH_TIMEOUT_ERROR_TITLE_PATTERN.test(text) && getAuthRetryButton({ allowDisabled: false }));
+      if (isTimeoutPage) {
+        const retryBtn = getAuthRetryButton({ allowDisabled: false });
+        if (retryBtn) {
+          retryClicked = true;
+          log('步骤 5：检测到操作超时错误，正在点击"重试"...', 'warn');
+          await humanPause(400, 900);
+          simulateClick(retryBtn);
+          await sleep(1500);
+          continue;
+        }
+      }
+    }
+
+    // 如果还在 step5 表单（说明提交没成功），返回 needsRefill 信号
+    if (retryClicked && isStep5Ready()) {
+      return { invalidProfile: true, errorText: 'STEP5_NEEDS_REFILL', needsRefill: true };
+    }
+
     await sleep(150);
   }
 
   const errorText = getStep5ErrorText();
   if (errorText) {
     return { invalidProfile: true, errorText };
+  }
+
+  // 超时后如果还在 step5，通知 background 重填
+  if (isStep5Ready()) {
+    return { invalidProfile: true, errorText: 'STEP5_NEEDS_REFILL', needsRefill: true };
   }
 
   return {
@@ -1384,6 +1439,10 @@ async function step5_fillNameBirthday(payload) {
 
   const outcome = await waitForStep5SubmitOutcome();
   if (outcome.invalidProfile) {
+    if (outcome.needsRefill) {
+      // 通知 background 需要重新填写（服务器超时，表单还在）
+      return { needsRefill: true };
+    }
     throw new Error(`步骤 5：${outcome.errorText}`);
   }
 
