@@ -1,0 +1,18 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+
+test('sidepanel html keeps a single contribution mode button in header', () => {
+  const html = fs.readFileSync('sidepanel/sidepanel.html', 'utf8');
+  const matches = html.match(/id="btn-contribution-mode"/g) || [];
+
+  assert.equal(matches.length, 1);
+  assert.match(html, /id="btn-contribution-mode"[^>]*title="进入贡献模式"/);
+});
+
+test('sidepanel source no longer keeps the legacy upload-page handler on the header contribution button', () => {
+  const source = fs.readFileSync('sidepanel/sidepanel.js', 'utf8');
+
+  assert.doesNotMatch(source, /openContributionUploadPage/);
+  assert.doesNotMatch(source, /await openContributionUploadPage\(\)/);
+});

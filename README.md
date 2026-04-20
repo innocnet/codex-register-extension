@@ -4,9 +4,9 @@
 
 当前版本基于侧边栏控制，支持单步执行、整套自动执行、停止当前流程、保存常用配置，以及通过 DuckDuckGo / QQ / 163 / Inbucket / Hotmail 协助获取验证码。
 
-## 最新版本测试结果
+## 插件效果
 
-最新版本实测了一个 5 轮自动，0 次失重试；睡前挂了一个十轮自动，1次重试：
+最新版本实测了一个 5 轮自动，0 次失重试；睡前挂了一个十轮自动，1次重试；一百五十个号，一个401：
 
 <table>
   <tr>
@@ -52,7 +52,7 @@
 - 支持自定义密码；留空时自动生成强密码
 - 自动显示当前使用中的密码，便于后续保存
 - 自动获取注册验证码与登录验证码
-- 支持 `Hotmail`：直接使用 `邮箱 + 客户端 ID + 刷新令牌（refresh token）` 刷新微软令牌，并通过 Microsoft Graph 读取最新邮件
+- 支持 `Hotmail`：继续使用 `邮箱 + 客户端 ID + 刷新令牌（refresh token）`，并可在远程服务与本地助手两种模式间切换
 - 支持 `QQ Mail`、`163 Mail`、`Inbucket mailbox`
 - 支持从 DuckDuckGo Email Protection 自动生成新的 `@duck.com` 地址
 - 支持基于 Cloudflare 自定义域名自动生成随机邮箱前缀
@@ -61,6 +61,8 @@
   - 页面要求填写 `age`
 - 支持 `Auto` 多轮运行
 - 支持中途 `Stop`
+- 支持通过日志区的 `记录` 按钮查看邮箱记录面板，按邮箱展示最终状态、时间、失败标签和重试次数
+- 支持将邮箱记录完整快照同步到本地 helper，便于开发者直接查看 `data/account-run-history.json`
 - Step 8 会自动寻找 OAuth 同意页的“继续”按钮，并通过 Chrome debugger 输入事件发起点击，然后监听本地回调地址
 
 
@@ -78,6 +80,29 @@
 ## 安装
 
 1. 打开 `chrome://extensions/`
+
+## 2026-04-17 更新补充：Gmail / 2925 别名邮箱
+
+本次版本对 `Gmail` 与 `2925` 的注册邮箱逻辑做了统一整理：
+
+- `Gmail` 与 `2925` 现在都走同一套“别名邮箱”逻辑。
+- 两者都不再使用“只填前缀再特殊拼接”的界面交互。
+- 两者都要求先填写“基邮箱”：
+  - `Gmail`：例如 `name@gmail.com`
+  - `2925`：例如 `name@2925.com`
+- 侧边栏里的“注册邮箱”输入框对这两种模式都已开放，可直接手动填写完整邮箱。
+- 侧边栏里的 `获取 / 生成` 按钮对这两种模式也可用，行为与 Duck / Cloudflare 一样，都是“可自动生成，也可手动覆盖”。
+
+具体行为：
+
+- `Gmail` 会基于完整基邮箱生成 `name+tag@gmail.com`
+- `2925` 会基于完整基邮箱生成 `name123456@2925.com`
+- 如果当前“注册邮箱”里已经是与当前基邮箱兼容的完整邮箱，流程会优先复用，不会强行重新生成
+
+注意：
+
+- `2925` 旧的“只填前缀”使用方式已经不再推荐，应该改为填写完整基邮箱
+- 如果你手动填写了与当前 `Gmail / 2925` 基邮箱不匹配的完整邮箱，侧边栏会在保存或执行 Step 3 时拦截
 2. 开启“开发者模式”
 3. 点击“加载已解压的扩展程序”
 4. 选择本项目目录
@@ -103,7 +128,7 @@
 2. 填好 `SUB2API` 地址、登录邮箱、登录密码、分组名
 3. `Mail` 与 `邮箱生成` 的配置方式同方案 A
 4. Step 1 会直接在 SUB2API 后台生成 OAuth 链接
-5. Step 9 会把 localhost 回调提交回 SUB2API，并直接创建 OpenAI 账号
+5. Step 10 会把 localhost 回调提交回 SUB2API，并直接创建 OpenAI 账号
 
 ### 方案 C：`Hotmail 账号池`
 
@@ -123,7 +148,18 @@
 http(s)://<your-host>/management.html#/oauth
 ```
 
-Step 1 和 Step 9 都依赖这个地址。
+Step 1 和 Step 10 都依赖这个地址。
+
+### `SUB2API`
+
+当 `来源 = SUB2API` 时，需要配置：
+
+- `SUB2API`：后台账号管理页地址
+- `账号 / 密码`：SUB2API 管理员登录信息
+- `分组`：目标 OpenAI 分组，留空时默认 `codex`
+- `默认代理`：可选，填写代理名称或代理 ID；留空时不使用代理
+
+插件会在 Step 1 和 Step 10 自动从 `/api/v1/admin/proxies/all` 解析这个代理，并在 OAuth 链接生成、授权码交换和账号创建请求中附带 `proxy_id`。如果名称匹配到多个代理，请改填代理 ID；留空则不会发送 `proxy_id`。
 
 ### `Mail`
 
@@ -137,13 +173,19 @@ Step 1 和 Step 9 都依赖这个地址。
 
 说明：
 
-- `Hotmail` 通过侧边栏里的 Hotmail 账号池选择账号，并直接访问 Microsoft Graph 邮件接口
+- `Hotmail` 通过侧边栏里的 Hotmail 账号池选择账号，可切换为远程服务模式或本地助手模式
 - `QQ`、`163`、`163 VIP` 用于直接轮询网页邮箱
 - `Inbucket` 通过你在侧边栏里配置的 host 访问 `mailbox` 页面：`https://<your-inbucket-host>/m/<mailbox>/`
 
 ### `Hotmail 账号池`
 
 仅当 `Mail = Hotmail` 时使用。
+
+可配置项：
+
+- `接码模式`
+- `远程服务地址`
+- `本地助手地址`
 
 每条账号支持保存：
 
@@ -154,10 +196,60 @@ Step 1 和 Step 9 都依赖这个地址。
 
 使用方式：
 
-- 先新增账号
+- 先选择 Hotmail 接码模式
+- 远程模式下填写你自己的远程服务地址
+- 本地模式下填写本地助手地址（默认 `http://127.0.0.1:17373`）
+- Windows 运行仓库根目录的 `start-hotmail-helper.bat`
+- macOS 运行仓库根目录的 `start-hotmail-helper.command`
+- 本地 helper 当前仅依赖 Python 标准库，无需额外安装第三方 Python 包
+- 再新增账号
 - 点击 `校验`
 - 校验通过后，可点击 `测试收信`
 - Auto 模式每轮会自动选用一个可用账号
+
+#### 本地 helper 启动命令
+
+Windows：
+
+```powershell
+.\start-hotmail-helper.bat
+```
+
+macOS：
+
+```bash
+chmod +x ./start-hotmail-helper.command
+./start-hotmail-helper.command
+```
+
+如果你不想走启动脚本，也可以直接运行 Python 程序本体：
+
+```bash
+python scripts/hotmail_helper.py
+```
+
+如果你的环境里命令是 `python3`：
+
+```bash
+python3 scripts/hotmail_helper.py
+```
+
+#### 启动成功标志
+
+本地 helper 启动成功后，终端会输出：
+
+```text
+Hotmail helper listening on http://127.0.0.1:17373
+```
+
+同时还会输出本地邮箱记录快照文件路径。看到这些输出后，再回到扩展里点 `校验`、`复制最新验证码`，或开启邮箱记录本地同步。
+
+#### 最小排错说明
+
+- 如果提示 `Python 3 not found`，先安装 Python 3.10+
+- 如果 helper 已启动但扩展仍报连接失败，先确认模式切到了 `本地助手`
+- 确认本地助手地址与终端输出一致，默认应为 `http://127.0.0.1:17373`
+- 如果地址一致仍失败，再检查是否有端口占用或终端里是否已经抛出异常
 
 ### `Mailbox`
 
@@ -324,6 +416,10 @@ Cloudflare 模式下，插件不会再调用 Cloudflare API 创建路由。
 
 支持多轮运行，运行次数由右上角数字框决定。
 
+`延迟` 里的“启动前倒计时”只控制整轮 Auto 开始前要不要先倒计时多少分钟。
+
+`步间随机` 控制 Auto 流程里**每一步真正执行前**的额外等待秒数。这个设置只影响 Auto，不影响你手动单步点击执行；填 `0` 或留空表示不延迟。
+
 如果当前面板里已经存在未完成进度，点击 `Auto` 时会弹出选择：
 
 - `重新开始`：重置当前流程进度，从 Step 1 开始新一轮
@@ -333,17 +429,18 @@ Cloudflare 模式下，插件不会再调用 Cloudflare API 创建路由。
 
 ### 单步模式
 
-侧边栏共有 9 个步骤按钮，可逐步执行：
+侧边栏共有 10 个步骤按钮，可逐步执行：
 
-1. `Get OAuth Link`
-2. `Open Signup`
-3. `Fill Email / Password`
+1. `Open ChatGPT`
+2. `Signup + Email`
+3. `Fill Password`
 4. `Get Signup Code`
 5. `Fill Name / Birthday`
-6. `Login via OAuth`
-7. `Get Login Code`
-8. `Manual OAuth Confirm`
-9. `CPA Verify`
+6. `Clear Login Cookies`
+7. `Login via OAuth`
+8. `Get Login Code`
+9. `Manual OAuth Confirm`
+10. `CPA Verify`
 
 ### Auto 模式
 
@@ -351,13 +448,13 @@ Cloudflare 模式下，插件不会再调用 Cloudflare API 创建路由。
 
 当前 Auto 逻辑是：
 
-1. Step 1 获取 CPA OAuth 链接
-2. Step 2 打开 OpenAI 注册页
-3. 根据 `Mail` 选择邮箱来源
-4. 如果 `Mail = Hotmail`，会从账号池自动分配一个可用账号
-5. 如果不是 Hotmail，则按当前“邮箱生成”配置尝试自动获取邮箱（Duck 或 Cloudflare）
+1. Step 1 打开 `https://chatgpt.com/`
+2. 根据 `Mail` 选择邮箱来源
+3. 如果 `Mail = Hotmail`，会从账号池自动分配一个可用账号
+4. 如果不是 Hotmail，则按当前”邮箱生成”配置尝试自动获取邮箱（Duck / Cloudflare / iCloud 等）
+5. Step 2 点击注册、填写邮箱，并按真实落地页进入密码页或直接进入邮箱验证码页
 6. 如果自动获取失败，暂停并等待你在侧边栏填写邮箱后点击 `Continue`
-7. 继续执行 Step 3 ~ Step 9
+7. 继续执行 Step 3 ~ Step 10
 
 也就是说：
 
@@ -366,35 +463,35 @@ Cloudflare 模式下，插件不会再调用 Cloudflare API 创建路由。
 - Auto 的暂停状态会保存在会话状态中，重新打开侧边栏后仍可继续
 - 如果你在 Auto 暂停时改为手动点步骤或跳过步骤，面板会先确认并停止 Auto，再切回手动控制
 - 选择 `继续当前` 时，后台不会先做大而全的前置校验，而是从当前步骤状态直接继续；缺什么条件，就在运行到那一步时再报错或暂停
+- 除了现有的页面切换等待外，Auto 还会在每一步执行前按 `步间随机` 的秒数额外等待；填 `0` 或留空表示不延迟
 
 ## 详细步骤说明
 
-### Step 1: Get OAuth Link
+### Step 1: Open ChatGPT
 
-通过 `content/vps-panel.js`：
+通过动态注入的 `content/signup-page.js`：
 
-- 打开 CPA OAuth 面板
-- 等待 `Codex OAuth` 卡片出现
-- 点击“登录”
-- 读取页面里的授权链接
+- 打开 `https://chatgpt.com/`
+- 确认官网首页或注册入口弹窗已经可操作
 
-结果会保存到侧边栏的 `OAuth` 字段。
+这一步不再获取 `OAuth` 链接；`OAuth` 链接会在 Step 6 内部按需刷新。
 
-### Step 2: Open Signup
+### Step 2: Signup + Email
 
 通过 `content/signup-page.js`：
 
-- 打开授权链接
-- 查找 `Sign up / Register / 创建账户` 按钮
+- 在官网首页查找 `免费注册 / Sign up / Register / 创建账户`
 - 自动点击进入注册流程
-
-### Step 3: Fill Email / Password
-
-- 如果侧边栏邮箱为空，会先按当前“邮箱生成”配置自动获取邮箱；失败时再提示手动粘贴
 - 自动填写邮箱
-- 如页面先要求邮箱，再进入密码页，会自动切页继续填写
+- 点击 `继续`
+- 等待真实落地页；进入 `https://auth.openai.com/create-account/password` 时继续 Step 3，进入 `https://auth.openai.com/email-verification` 时自动跳过 Step 3 直接进入 Step 4
+
+### Step 3: Fill Password
+
+- 使用第 2 步已经确定好的邮箱
 - 使用自定义密码或自动生成密码
-- 提交注册表单
+- 在密码页填写密码并提交注册表单
+- 后台会在真正把 Step 3 记为完成前，再确认页面是否已经推进；如果此时出现认证页 `重试` 页面，或 `/email-verification` 上的 `405 / Route Error` 重试页，会先通过共享恢复逻辑最多自动点击 5 次 `重试` 尝试恢复，再继续后续链路
 
 实际使用的密码会写入会话状态，并同步到侧边栏显示。
 
@@ -402,11 +499,14 @@ Cloudflare 模式下，插件不会再调用 Cloudflare API 创建路由。
 
 根据 `Mail` 配置，轮询邮箱并提取 6 位验证码。
 
-进入邮箱轮询前，脚本会先确认认证页是否已经进入验证码页面；如果密码页出现 `糟糕，出错了 / 操作超时（Operation timed out）` 并带有 `重试` 按钮，会先自动点击 `重试`、回到密码页重新提交，再继续等待验证码页面。
+进入邮箱轮询前，脚本会先确认认证页是否已经进入验证码页面；如果注册认证流程出现 `糟糕，出错了 / 操作超时（Operation timed out）`，或 `/email-verification` 上的 `405 / Route Error` 且带有 `重试` 按钮，会先通过共享恢复逻辑最多自动点击 5 次 `重试`，必要时回到密码页重新提交，再继续等待验证码页面。
+
+在 `Auto` 模式下，如果 Step 4 当前轮失败，后台不会立刻丢弃这轮邮箱；而是沿用当前邮箱回到 Step 1 重新开始当前轮，避免刚拿到的邮箱被直接换掉。
+但如果 Step 4 的认证重试页正文里出现 `user_already_exists`，则会直接判定”当前用户已存在”，不会点击 `重试`，而是立即结束当前轮；开启自动重试时会直接继续下一轮。
 
 支持：
 
-- `Hotmail`（Microsoft Graph 邮件接口）
+- `Hotmail`（远程服务 / 本地助手）
 - `content/qq-mail.js`
 - `content/mail-163.js`
 - `content/inbucket-mail.js`
@@ -426,21 +526,58 @@ Cloudflare 模式下，插件不会再调用 Cloudflare API 创建路由。
 - 页面要求 `age`
 
 如果页面是生日模式，会填写年月日；如果页面上存在 `input[name='age']`，则直接填写年龄。
+如果资料页出现顶部“我同意以下所有各项”总勾选框，脚本会优先自动勾选，再点击 `完成帐户创建`。
+点击 `完成帐户创建` 后，Step 5 会立刻记为完成，不再等待页面跳转结果；自动运行在进入 Step 6 前只会等待当前页面加载完成，不再接管 ChatGPT 跳转或 onboarding 跳过逻辑。
 
-### Step 6: Login via OAuth
+### Step 6: Clear Login Cookies
 
-在登录前会先重新获取一遍最新的 CPA OAuth 链接，再使用刚注册的账号登录。
+这一步只负责登录前清理环境：
+
+- 开始前先等待 10 秒
+- 直接删除 `chatgpt.com / openai.com` 相关 cookies
+- 必要时再用 `browsingData` 补扫一次
+
+把 cookies 清理独立成单独步骤后，后续登录链路的重开锚点就不再落在这里。
+
+### Step 7: Login via OAuth
+
+这一步会重新获取一遍最新的 CPA OAuth 链接，再使用刚注册的账号登录。
+
+当前 Step 7 的完成标准不是“邮箱/密码已提交”，而是：
+
+- 已刷新到最新 OAuth 链接
+- 认证页已经真正进入登录验证码页面
+- 如遇登录超时报错，会先尝试通过共享恢复逻辑最多自动点击 5 次认证页上的 `重试` 恢复当前页面；若仍未恢复，再按既有逻辑重跑整个 Step 7
+- 如遇登录页长时间停滞，会由后台刷新 OAuth 后重跑整个 Step 7
+- 如果重试页内容中出现 `max_check_attempts`，会立刻完全停止流程，并在侧边栏复用现有确认弹窗提示这是 Cloudflare 风控拦截，确认按钮显示为“我知道了”
 
 支持：
 
 - 邮箱 + 密码登录
-- 提交后进入验证码验证流程
+- 必要时切换到一次性验证码登录
+- 直到登录验证码页就绪才算步骤完成
 
-### Step 7: Get Login Code
+### Step 8: Get Login Code
+
+Step 8 默认要求当前认证页已经处于登录验证码页。
+
+它只负责：
+
+- 打开邮箱并轮询登录验证码
+- 填写并提交登录验证码
+- 验证码链路失败后按有限次数回退到 Step 7
+- 如果进入登录超时报错/重试页，会直接报错并回到 Step 7，不会在 Step 8 内部点击 `重试`
+- 如果重试页内容中出现 `max_check_attempts`，会直接完全停止整个流程，并复用现有确认弹窗提醒先等待 15 到 30 分钟或更换浏览器，确认按钮显示为“我知道了”
 
 与 Step 4 类似，但会使用稍微不同的关键词组合去找登录验证码邮件。
 
-### Step 8: Manual OAuth Confirm
+### Step 9: Manual OAuth Confirm
+
+严格回调捕获规则：
+
+- 步骤 9 现在只接受 `http(s)://localhost:<port>/auth/callback?code=...&state=...` 或 `http(s)://127.0.0.1:<port>/auth/callback?code=...&state=...`
+- 监听范围只限于当前 OAuth 认证标签页的主 frame 跳转
+- 普通 `localhost` 页面，包括本地部署的 CPA 面板，不会再被误判为回调地址
 
 严格回调捕获规则：
 
@@ -454,6 +591,7 @@ Cloudflare 模式下，插件不会再调用 Cloudflare API 创建路由。
 - 等待按钮可点击
 - 获取按钮坐标
 - 通过 Chrome `debugger` 的输入事件点击该按钮
+- 点击后会持续检查页面是否真正离开当前状态；如果出现认证页 `重试` 页面，会先通过共享恢复逻辑最多自动点击 5 次 `重试` 尝试恢复，再重新执行当前轮的“继续”点击
 - 同时监听 `chrome.webNavigation.onBeforeNavigate`
 - 一旦捕获本地回调地址，就把结果保存到 `Callback`
 
@@ -463,7 +601,15 @@ Cloudflare 模式下，插件不会再调用 Cloudflare API 创建路由。
 - 如果 120 秒内没有捕获到 localhost 回调，会报错超时
 - README 中的按钮名称沿用了旧文案，但代码行为是“自动尝试点击”
 
-### Step 9: CPA Verify
+### Step 10: CPA Verify
+
+校验规则：
+
+- 步骤 10 会拒绝任何不是真实 `/auth/callback`，或缺少 `code` / `state` 的本地回调地址
+- 成功后的清理只会针对 `/auth` 这一类真实回调标签页，不会再泛化清理任意 localhost 路径
+- 侧边栏可切换“本地 CPA”策略，默认是 `全部回调`
+- 选择 `全部回调` 时，即使 CPA 部署在本地，也会执行步骤 10
+- 选择 `跳过第10步` 时，仅当本地 CPA 且步骤 9 已拿到回调地址时，才会直接跳过步骤 10
 
 校验规则：
 
@@ -550,8 +696,8 @@ background.js              后台主控，编排 1~9 步、Tab 复用、状态�
 manifest.json              扩展清单
 data/names.js              随机姓名、生日数据
 content/utils.js           通用工具：等待元素、点击、日志、停止控制
-content/vps-panel.js       CPA 面板步骤：Step 1 / Step 9
-content/signup-page.js     OpenAI 注册/登录页步骤：Step 2 / 3 / 5 / 6 / 8
+content/vps-panel.js       CPA 面板步骤：内部 OAuth 刷新 / Step 10
+content/signup-page.js     ChatGPT 官网 + OpenAI 注册/登录页步骤：Step 1 / 2 / 3 / 5 / 7 / 9
 hotmail-utils.js           Hotmail 收信相关通用辅助
 content/duck-mail.js       Duck 邮箱自动获取
 content/qq-mail.js         QQ 邮箱验证码轮询

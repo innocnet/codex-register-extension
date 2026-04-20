@@ -1,4 +1,4 @@
-// content/vps-panel.js — Content script for CPA panel (steps 1, 9)
+// content/vps-panel.js — Content script for CPA panel (steps 7, 10 / OAuth URL request)
 // Injected on: CPA panel (user-configured URL)
 //
 // Actual DOM structure (after login click):
@@ -26,6 +26,7 @@
 console.log('[MultiPage:vps-panel] Content script loaded on', location.href);
 
 const VPS_PANEL_LISTENER_SENTINEL = 'data-multipage-vps-panel-listener';
+const STEP9_SUCCESS_BADGE_TIMEOUT_MS = 120000;
 const {
   isRecoverableStep9AuthFailure,
 } = self.MultiPageActivationUtils || {};
@@ -35,31 +36,41 @@ if (document.documentElement.getAttribute(VPS_PANEL_LISTENER_SENTINEL) !== '1') 
 
   // Listen for commands from Background
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === 'EXECUTE_STEP') {
+    if (message.type === 'EXECUTE_STEP' || message.type === 'REQUEST_OAUTH_URL') {
       resetStopState();
       const startedAt = Date.now();
-      console.log(LOG_PREFIX, `EXECUTE_STEP received for step ${message.step}`, {
+      const actionLabel = message.type === 'REQUEST_OAUTH_URL'
+        ? 'REQUEST_OAUTH_URL'
+        : `EXECUTE_STEP received for step ${message.step}`;
+      console.log(LOG_PREFIX, actionLabel, {
         url: location.href,
         payloadKeys: Object.keys(message.payload || {}),
         snapshot: getVpsPanelSnapshot(),
       });
-      handleStep(message.step, message.payload).then(() => {
-        console.log(LOG_PREFIX, `EXECUTE_STEP resolved for step ${message.step} after ${Date.now() - startedAt}ms`, {
+      const handler = message.type === 'REQUEST_OAUTH_URL'
+        ? requestOAuthUrl(message.payload)
+        : handleStep(message.step, message.payload);
+      handler.then((result) => {
+        console.log(LOG_PREFIX, `${actionLabel} resolved after ${Date.now() - startedAt}ms`, {
           url: location.href,
           snapshot: getVpsPanelSnapshot(),
         });
-        sendResponse({ ok: true });
+        sendResponse({ ok: true, ...(result || {}) });
       }).catch(err => {
-        console.error(LOG_PREFIX, `EXECUTE_STEP rejected for step ${message.step} after ${Date.now() - startedAt}ms: ${err?.message || err}`, {
+        console.error(LOG_PREFIX, `${actionLabel} rejected after ${Date.now() - startedAt}ms: ${err?.message || err}`, {
           url: location.href,
           snapshot: getVpsPanelSnapshot(),
         });
         if (isStopError(err)) {
-          log(`步骤 ${message.step}：已被用户停止。`, 'warn');
+          if (message.step) {
+            log(`步骤 ${message.step}：已被用户停止。`, 'warn');
+          }
           sendResponse({ stopped: true, error: err.message });
           return;
         }
-        reportError(message.step, err.message);
+        if (message.step) {
+          reportError(message.step, err.message);
+        }
         sendResponse({ error: err.message });
       });
       return true;
@@ -72,7 +83,7 @@ if (document.documentElement.getAttribute(VPS_PANEL_LISTENER_SENTINEL) !== '1') 
 async function handleStep(step, payload) {
   switch (step) {
     case 1: return await step1_getOAuthLink(payload);
-    case 9: return await step9_vpsVerify(payload);
+    case 10: return await step9_vpsVerify(payload);
     default:
       throw new Error(`vps-panel.js 不处理步骤 ${step}`);
   }
@@ -179,60 +190,354 @@ function isLocalhostOAuthCallbackUrl(rawUrl) {
   return Boolean(code && state);
 }
 
-function getStatusBadgeElement() {
-  const selectors = [
+function getStatusBadgeSelectors() {
+  return [
     '#root > div > div > div > main > div > div > div > div > div:nth-child(1) > div > div.OAuthPage-module__cardContent___1sXLA > div.status-badge',
     '#root .OAuthPage-module__cardContent___1sXLA > .status-badge',
     '.OAuthPage-module__cardContent___1sXLA > .status-badge',
     '.status-badge',
   ];
+}
 
-  for (const selector of selectors) {
+function getStatusBadgeEntries() {
+  const seen = new Set();
+  const entries = [];
+
+  for (const selector of getStatusBadgeSelectors()) {
     const candidates = document.querySelectorAll(selector);
-    const visible = Array.from(candidates).find(isVisibleElement);
-    if (visible) return visible;
+    for (const candidate of candidates) {
+      if (seen.has(candidate)) continue;
+      seen.add(candidate);
+      entries.push(createStep9Entry(candidate, selector));
+    }
+  }
+
+  return entries;
+}
+
+function summarizeStatusBadgeEntries(entries) {
+  if (!entries.length) return '无可见状态徽标';
+  return entries
+    .map((entry, index) => {
+      const text = entry.text || '(空文本)';
+      const className = entry.className ? ` class=${getInlineTextSnippet(entry.className, 80)}` : '';
+      const errorVisual = entry.errorVisualSummary ? ` error=${getInlineTextSnippet(entry.errorVisualSummary, 80)}` : '';
+      return `#${index + 1}="${getInlineTextSnippet(text, 80)}"${className}${errorVisual}`;
+    })
+    .join(' | ');
+}
+
+const STEP9_SUCCESS_STATUSES = new Set([
+  'Authentication successful!',
+  'Аутентификация успешна!',
+  '认证成功！',
+]);
+
+function normalizeStep9StatusText(statusText) {
+  return String(statusText || '').replace(/\s+/g, ' ').trim();
+}
+
+function isOAuthCallbackTimeoutFailure(statusText) {
+  return /认证失败:\s*(?:Timeout waiting for OAuth callback|timeout of \d+ms exceeded)/i.test(statusText || '');
+}
+
+function isStep9FailureText(statusText) {
+  const text = normalizeStep9StatusText(statusText);
+  if (!text) return false;
+  if (isOAuthCallbackTimeoutFailure(text)) return true;
+  if (typeof isRecoverableStep9AuthFailure === 'function' && isRecoverableStep9AuthFailure(text)) {
+    return true;
+  }
+  return /回调\s*url\s*提交失败|callback\s*url\s*submit\s*failed|oauth flow is not pending/i.test(text);
+}
+
+function isStep9SuccessStatus(statusText) {
+  return STEP9_SUCCESS_STATUSES.has(normalizeStep9StatusText(statusText));
+}
+
+function isStep9SuccessLikeStatus(statusText) {
+  const text = normalizeStep9StatusText(statusText);
+  return /authentication successful|аутентификац.*успеш|认证成功/i.test(text);
+}
+
+function parseCssColorChannels(colorText) {
+  const text = String(colorText || '').trim().toLowerCase();
+  if (!text || text === 'transparent' || text === 'inherit' || text === 'initial' || text === 'unset') {
+    return null;
+  }
+
+  if (text.startsWith('#')) {
+    const hex = text.slice(1);
+    if (hex.length === 3 || hex.length === 4) {
+      const expanded = hex.split('').map((part) => part + part);
+      const [r, g, b, a = 'ff'] = expanded;
+      return {
+        r: Number.parseInt(r, 16),
+        g: Number.parseInt(g, 16),
+        b: Number.parseInt(b, 16),
+        a: Number.parseInt(a, 16) / 255,
+      };
+    }
+    if (hex.length === 6 || hex.length === 8) {
+      const parts = hex.match(/.{1,2}/g) || [];
+      const [r, g, b, a = 'ff'] = parts;
+      return {
+        r: Number.parseInt(r, 16),
+        g: Number.parseInt(g, 16),
+        b: Number.parseInt(b, 16),
+        a: Number.parseInt(a, 16) / 255,
+      };
+    }
+  }
+
+  if (text.startsWith('rgb')) {
+    const numericParts = text.match(/[\d.]+/g) || [];
+    if (numericParts.length >= 3) {
+      const [r, g, b, a = '1'] = numericParts.map(Number);
+      return { r, g, b, a };
+    }
   }
 
   return null;
 }
 
+function isReddishColor(colorText) {
+  const channels = parseCssColorChannels(colorText);
+  if (!channels) return false;
+  const { r, g, b, a = 1 } = channels;
+  if (a <= 0.05) return false;
+  return r >= 120 && r >= g + 35 && r >= b + 35;
+}
+
+function getStep9ErrorVisualSignals(element, className = '') {
+  const signals = [];
+  const normalizedClassName = String(className || '').replace(/\s+/g, ' ').trim();
+  if (/(?:error|danger|fail|destructive|text-red|text-danger|alert)/i.test(normalizedClassName)) {
+    signals.push(`class=${getInlineTextSnippet(normalizedClassName, 80)}`);
+  }
+
+  if (!element) {
+    return signals;
+  }
+
+  const style = window.getComputedStyle(element);
+  if (isReddishColor(style.color)) {
+    signals.push(`color=${style.color}`);
+  }
+  if (isReddishColor(style.borderColor)) {
+    signals.push(`border=${style.borderColor}`);
+  }
+  if (isReddishColor(style.backgroundColor)) {
+    signals.push(`background=${style.backgroundColor}`);
+  }
+
+  return signals;
+}
+
+function createStep9Entry(candidate, selector) {
+  const className = String(candidate?.className || '').replace(/\s+/g, ' ').trim();
+  const errorVisualSignals = getStep9ErrorVisualSignals(candidate, className);
+  return {
+    element: candidate,
+    selector,
+    visible: isVisibleElement(candidate),
+    text: normalizeStep9StatusText(candidate?.textContent || ''),
+    className,
+    errorVisualSignals,
+    errorVisualSummary: errorVisualSignals.join(', '),
+    hasErrorVisualSignal: errorVisualSignals.length > 0,
+  };
+}
+
+function getStep9PageErrorSelectors() {
+  return [
+    '[role="alert"]',
+    '[aria-live="assertive"]',
+    '[aria-live="polite"]',
+    '.alert',
+    '[class*="alert"]',
+    '[class*="error"]',
+    '[class*="danger"]',
+    '.text-danger',
+    '.text-red',
+  ];
+}
+
+function getStep9PageErrorEntries() {
+  const seen = new Set();
+  const entries = [];
+
+  for (const selector of getStep9PageErrorSelectors()) {
+    const candidates = document.querySelectorAll(selector);
+    for (const candidate of candidates) {
+      if (seen.has(candidate)) continue;
+      seen.add(candidate);
+      if (!isVisibleElement(candidate)) continue;
+
+      const entry = createStep9Entry(candidate, selector);
+      if (!isStep9FailureText(entry.text)) continue;
+      entries.push(entry);
+    }
+  }
+
+  return entries;
+}
+
+function buildStep9StatusDiagnostics(entries = [], pageErrorEntries = [], pageSnippet = '') {
+  const visibleEntries = entries.filter((entry) => entry.visible);
+  const successLikeEntries = visibleEntries.filter((entry) => isStep9SuccessLikeStatus(entry.text));
+  const exactSuccessEntries = visibleEntries.filter((entry) => isStep9SuccessStatus(entry.text) && !entry.hasErrorVisualSignal);
+  const failureEntries = visibleEntries.filter((entry) => isStep9FailureText(entry.text));
+  const errorStyledEntries = visibleEntries.filter((entry) => entry.hasErrorVisualSignal);
+  const allFailureEntries = [...failureEntries, ...pageErrorEntries];
+  const decisiveFailureEntry = allFailureEntries[0] || null;
+  const selectedEntry = decisiveFailureEntry || exactSuccessEntries[0] || visibleEntries[0] || null;
+  const selectedText = selectedEntry?.text || '';
+  const visibleSummary = summarizeStatusBadgeEntries(visibleEntries);
+  const successLikeSummary = summarizeStatusBadgeEntries(successLikeEntries);
+  const exactSuccessSummary = summarizeStatusBadgeEntries(exactSuccessEntries);
+  const failureSummary = summarizeStatusBadgeEntries(failureEntries);
+  const pageErrorSummary = summarizeStatusBadgeEntries(pageErrorEntries);
+  const errorStyledSummary = summarizeStatusBadgeEntries(errorStyledEntries);
+  const extraFailureSuffix = pageErrorEntries.length ? `；额外错误提示：${pageErrorSummary}` : '';
+  const errorStyledSuffix = errorStyledEntries.length ? `；红色/错误样式徽标：${errorStyledSummary}` : '';
+
+  return {
+    selectedText,
+    exactSuccessText: exactSuccessEntries[0]?.text || '',
+    failureText: decisiveFailureEntry?.text || '',
+    visibleCount: visibleEntries.length,
+    visibleSummary,
+    hasSuccessLikeVisibleBadge: successLikeEntries.length > 0,
+    hasExactSuccessVisibleBadge: exactSuccessEntries.length > 0,
+    hasFailureVisibleBadge: allFailureEntries.length > 0,
+    hasErrorStyledVisibleBadge: errorStyledEntries.length > 0,
+    successLikeSummary,
+    exactSuccessSummary,
+    failureSummary,
+    pageErrorSummary,
+    errorStyledSummary,
+    pageSnippet,
+    signature: JSON.stringify({
+      selectedText,
+      visibleCount: visibleEntries.length,
+      visibleSummary,
+      successLikeSummary,
+      exactSuccessSummary,
+      failureSummary,
+      pageErrorSummary,
+      errorStyledSummary,
+    }),
+    summary: selectedText
+      ? `当前聚焦状态="${getInlineTextSnippet(selectedText, 80)}"；可见徽标 ${visibleEntries.length} 个：${visibleSummary}${extraFailureSuffix}${errorStyledSuffix}`
+      : `当前未选中任何可见状态徽标；可见徽标 ${visibleEntries.length} 个：${visibleSummary}${extraFailureSuffix}${errorStyledSuffix}；页面片段="${getInlineTextSnippet(pageSnippet, 120)}"`,
+  };
+}
+
+function getStatusBadgeDiagnostics() {
+  return buildStep9StatusDiagnostics(
+    getStatusBadgeEntries(),
+    getStep9PageErrorEntries(),
+    getPageTextSnippet()
+  );
+}
+
+function getStatusBadgeElement() {
+  const visibleEntry = getStatusBadgeEntries().find((entry) => entry.visible);
+  return visibleEntry ? visibleEntry.element : null;
+}
+
 function getStatusBadgeText() {
-  const statusEl = getStatusBadgeElement();
-  return statusEl ? (statusEl.textContent || '').replace(/\s+/g, ' ').trim() : '';
+  const diagnostics = getStatusBadgeDiagnostics();
+  return diagnostics.selectedText;
 }
 
-function isOAuthCallbackTimeoutFailure(statusText) {
-  return /认证失败:\s*Timeout waiting for OAuth callback/i.test(statusText || '');
-}
-
-async function waitForExactSuccessBadge(timeout = 30000) {
+async function waitForExactSuccessBadge(timeout = STEP9_SUCCESS_BADGE_TIMEOUT_MS) {
   const start = Date.now();
+  let lastDiagnosticsSignature = '';
+  let lastHeartbeatLoggedAt = 0;
+  let lastSuccessLikeMismatchSignature = '';
+  let lastSuccessFailureConflictSignature = '';
 
   while (Date.now() - start < timeout) {
     throwIfStopped();
-    const statusText = getStatusBadgeText();
-    if (isOAuthCallbackTimeoutFailure(statusText)) {
-      throw new Error(`STEP9_OAUTH_TIMEOUT::${statusText}`);
+    const diagnostics = getStatusBadgeDiagnostics();
+    const elapsed = Date.now() - start;
+
+    if (diagnostics.signature !== lastDiagnosticsSignature) {
+      lastDiagnosticsSignature = diagnostics.signature;
+      lastHeartbeatLoggedAt = elapsed;
+      log(`步骤 10：认证状态检测中，${diagnostics.summary}`);
+      console.log(LOG_PREFIX, '[Step 9] status badge diagnostics changed', diagnostics);
+    } else if (elapsed - lastHeartbeatLoggedAt >= 10000) {
+      lastHeartbeatLoggedAt = elapsed;
+      log(`步骤 10：仍在等待认证成功，${diagnostics.summary}`);
+      console.log(LOG_PREFIX, '[Step 9] still waiting for success badge', diagnostics);
     }
-    if (typeof isRecoverableStep9AuthFailure === 'function' && isRecoverableStep9AuthFailure(statusText)) {
-      throw new Error(`STEP9_OAUTH_RETRY::${statusText}`);
+
+    if (diagnostics.hasSuccessLikeVisibleBadge && !diagnostics.hasExactSuccessVisibleBadge) {
+      const mismatchSignature = JSON.stringify({
+        selectedText: diagnostics.selectedText,
+        successLikeSummary: diagnostics.successLikeSummary,
+        visibleSummary: diagnostics.visibleSummary,
+        errorStyledSummary: diagnostics.errorStyledSummary,
+      });
+      if (mismatchSignature !== lastSuccessLikeMismatchSignature) {
+        lastSuccessLikeMismatchSignature = mismatchSignature;
+        const errorStyledSuffix = diagnostics.hasErrorStyledVisibleBadge
+          ? `；错误样式徽标：${diagnostics.errorStyledSummary}`
+          : '';
+        log(
+          `步骤 10：检测到“认证成功”相关徽标，但未命中精确成功条件。当前聚焦="${getInlineTextSnippet(diagnostics.selectedText || '(空)', 80)}"；成功相关徽标：${diagnostics.successLikeSummary}${errorStyledSuffix}`,
+          'warn'
+        );
+        console.warn(LOG_PREFIX, '[Step 9] success-like badge detected without exact match', diagnostics);
+      }
     }
-    if (statusText === '认证成功！') {
-      return statusText;
+
+    if (diagnostics.hasExactSuccessVisibleBadge && diagnostics.hasFailureVisibleBadge) {
+      const conflictSignature = JSON.stringify({
+        exactSuccessSummary: diagnostics.exactSuccessSummary,
+        failureSummary: diagnostics.failureSummary,
+        pageErrorSummary: diagnostics.pageErrorSummary,
+      });
+      if (conflictSignature !== lastSuccessFailureConflictSignature) {
+        lastSuccessFailureConflictSignature = conflictSignature;
+        const failureSummary = diagnostics.pageErrorSummary !== '无可见状态徽标'
+          ? diagnostics.pageErrorSummary
+          : diagnostics.failureSummary;
+        log(
+          `步骤 10：同时检测到成功徽标和失败提示，本轮不判定成功。成功徽标：${diagnostics.exactSuccessSummary}；失败提示：${failureSummary}`,
+          'warn'
+        );
+        console.warn(LOG_PREFIX, '[Step 9] success badge is blocked by visible failure', diagnostics);
+      }
+    }
+
+    if (diagnostics.failureText) {
+      if (isOAuthCallbackTimeoutFailure(diagnostics.failureText)) {
+        throw new Error(`STEP9_OAUTH_TIMEOUT::${diagnostics.failureText}`);
+      }
+      throw new Error(`STEP9_OAUTH_RETRY::${diagnostics.failureText}`);
+    }
+    if (diagnostics.exactSuccessText) {
+      return diagnostics.exactSuccessText;
     }
     await sleep(200);
   }
 
-  const finalText = getStatusBadgeText();
+  const finalDiagnostics = getStatusBadgeDiagnostics();
+  const finalText = finalDiagnostics.failureText || finalDiagnostics.selectedText;
+  const diagnosticsSuffix = ` 当前诊断：${finalDiagnostics.summary}`;
   if (isOAuthCallbackTimeoutFailure(finalText)) {
-    throw new Error(`STEP9_OAUTH_TIMEOUT::${finalText}`);
+    throw new Error(`STEP9_OAUTH_TIMEOUT::${finalText}${diagnosticsSuffix}`);
   }
-  if (typeof isRecoverableStep9AuthFailure === 'function' && isRecoverableStep9AuthFailure(finalText)) {
-    throw new Error(`STEP9_OAUTH_RETRY::${finalText}`);
+  if (isStep9FailureText(finalText)) {
+    throw new Error(`STEP9_OAUTH_RETRY::${finalText}${diagnosticsSuffix}`);
   }
   throw new Error(finalText
-    ? `CPA 面板状态不是“认证成功！”，当前为“${finalText}”。`
-    : 'CPA 面板长时间未出现“认证成功！”状态徽标。');
+    ? `CPA 面板状态未进入成功状态，当前为“${finalText}”。${diagnosticsSuffix}`
+    : `CPA 面板长时间未出现成功状态徽标。${diagnosticsSuffix}`);
 }
 
 function findManagementKeyInput() {
@@ -392,21 +697,27 @@ async function ensureOAuthManagementPage(vpsPassword, step = 1, timeout = 45000)
   throw new Error('无法进入 CPA 的 OAuth 管理页面，请检查面板是否正常加载。URL: ' + location.href);
 }
 
+async function requestOAuthUrl(payload = {}) {
+  return step1_getOAuthLink(payload, { report: false });
+}
+
 // ============================================================
 // Step 1: Get OAuth Link
 // ============================================================
 
-async function step1_getOAuthLink(payload) {
+async function step1_getOAuthLink(payload, options = {}) {
+  const { report = true } = options;
   const { vpsPassword } = payload || {};
+  const logStep = Number.isInteger(payload?.logStep) ? payload.logStep : 1;
   console.log(LOG_PREFIX, '[Step 1] step1_getOAuthLink start', {
     url: location.href,
     hasVpsPassword: Boolean(vpsPassword),
     snapshot: getVpsPanelSnapshot(),
   });
 
-  log('步骤 1：正在等待 CPA 面板加载并进入 OAuth 页面...');
+  log(`步骤 ${logStep}：正在等待 CPA 面板加载并进入 OAuth 页面...`);
 
-  const { header, authUrlEl: existingAuthUrlEl } = await ensureOAuthManagementPage(vpsPassword, 1);
+  const { header, authUrlEl: existingAuthUrlEl } = await ensureOAuthManagementPage(vpsPassword, logStep);
   let authUrlEl = existingAuthUrlEl;
   console.log(LOG_PREFIX, '[Step 1] ensureOAuthManagementPage resolved', {
     url: location.href,
@@ -426,7 +737,7 @@ async function step1_getOAuthLink(payload) {
         url: location.href,
         buttonText: getInlineTextSnippet(getActionText(loginBtn), 80),
       });
-      log('步骤 1：OAuth 登录按钮当前不可用，正在等待授权链接出现...');
+      log(`步骤 ${logStep}：OAuth 登录按钮当前不可用，正在等待授权链接出现...`);
     } else {
       await humanPause(500, 1400);
       simulateClick(loginBtn);
@@ -434,7 +745,7 @@ async function step1_getOAuthLink(payload) {
         url: location.href,
         buttonText: getInlineTextSnippet(getActionText(loginBtn), 80),
       });
-      log('步骤 1：已点击 OAuth 登录按钮，正在等待授权链接...');
+      log(`步骤 ${logStep}：已点击 OAuth 登录按钮，正在等待授权链接...`);
     }
 
     try {
@@ -446,7 +757,7 @@ async function step1_getOAuthLink(payload) {
       );
     }
   } else {
-    log('步骤 1：CPA 面板上已显示授权链接。');
+    log(`步骤 ${logStep}：CPA 面板上已显示授权链接。`);
   }
 
   const oauthUrl = (authUrlEl.textContent || '').trim();
@@ -454,16 +765,19 @@ async function step1_getOAuthLink(payload) {
     throw new Error(`拿到的 OAuth 链接无效：\"${oauthUrl.slice(0, 50)}\"。应为 http 开头的 URL。`);
   }
 
-  log(`步骤 1：已获取 OAuth 链接：${oauthUrl.slice(0, 80)}...`, 'ok');
+  log(`步骤 ${logStep}：已获取 OAuth 链接：${oauthUrl.slice(0, 80)}...`, 'ok');
   console.log(LOG_PREFIX, '[Step 1] reporting completion with oauthUrl', {
     url: location.href,
     oauthUrlPreview: oauthUrl.slice(0, 120),
   });
-  reportComplete(1, { oauthUrl });
+  if (report) {
+    reportComplete(1, { oauthUrl });
+  }
+  return { oauthUrl };
 }
 
 // ============================================================
-// 步骤 9：CPA 回调验证——填写 localhost 回调地址并提交
+// 步骤 10：CPA 回调验证——填写 localhost 回调地址并提交
 // ============================================================
 
 async function step9_vpsVerify(payload) {
@@ -472,22 +786,22 @@ async function step9_vpsVerify(payload) {
   // 优先从 payload 读取 localhostUrl；没有时再回退到全局状态
   let localhostUrl = payload?.localhostUrl;
   if (localhostUrl && !isLocalhostOAuthCallbackUrl(localhostUrl)) {
-    throw new Error('步骤 9 只接受真实的 localhost OAuth 回调地址，请重新执行步骤 8。');
+    throw new Error('步骤 10 只接受真实的 localhost OAuth 回调地址，请重新执行步骤 9。');
   }
   if (!localhostUrl) {
-    log('步骤 9：payload 中没有 localhostUrl，正在从状态中读取...');
+    log('步骤 10：payload 中没有 localhostUrl，正在从状态中读取...');
     const state = await chrome.runtime.sendMessage({ type: 'GET_STATE' });
     localhostUrl = state.localhostUrl;
     if (localhostUrl && !isLocalhostOAuthCallbackUrl(localhostUrl)) {
-      throw new Error('步骤 9 只接受真实的 localhost OAuth 回调地址，请重新执行步骤 8。');
+      throw new Error('步骤 10 只接受真实的 localhost OAuth 回调地址，请重新执行步骤 9。');
     }
   }
   if (!localhostUrl) {
     throw new Error('未找到 localhost 回调地址，请先完成步骤 8。');
   }
-  log(`步骤 9：已获取 localhostUrl：${localhostUrl.slice(0, 60)}...`);
+  log(`步骤 10：已获取 localhostUrl：${localhostUrl.slice(0, 60)}...`);
 
-  log('步骤 9：正在查找回调地址输入框...');
+  log('步骤 10：正在查找回调地址输入框...');
 
   // Find the callback URL input
   // Actual DOM: <input class="input" placeholder="http://localhost:1455/auth/callback?code=...&state=...">
@@ -504,29 +818,30 @@ async function step9_vpsVerify(payload) {
 
   await humanPause(600, 1500);
   fillInput(urlInput, localhostUrl);
-  log(`步骤 9：已填写回调地址：${localhostUrl.slice(0, 80)}...`);
+  log(`步骤 10：已填写回调地址：${localhostUrl.slice(0, 80)}...`);
 
-  // Find and click "提交回调 URL" button
+  // Find and click the callback submit button in supported UI languages.
+  const callbackSubmitPattern = /提交回调\s*URL|Submit\s+Callback\s+URL|Отправить\s+Callback\s+URL/i;
   let submitBtn = null;
   try {
     submitBtn = await waitForElementByText(
       '[class*="callbackActions"] button, [class*="callbackSection"] button',
-      /提交/,
+      callbackSubmitPattern,
       5000
     );
   } catch {
     try {
-      submitBtn = await waitForElementByText('button.btn', /提交回调/, 5000);
+      submitBtn = await waitForElementByText('button.btn', callbackSubmitPattern, 5000);
     } catch {
-      throw new Error('未找到“提交回调 URL”按钮。URL: ' + location.href);
+      throw new Error('未找到回调提交按钮（提交回调 URL / Submit Callback URL / Отправить Callback URL）。URL: ' + location.href);
     }
   }
 
   await humanPause(450, 1200);
   simulateClick(submitBtn);
-  log('步骤 9：已点击“提交回调 URL”，正在等待认证结果...');
+  log('步骤 10：已点击回调提交按钮，正在等待认证结果...');
 
   const verifiedStatus = await waitForExactSuccessBadge();
-  log(`步骤 9：${verifiedStatus}`, 'ok');
-  reportComplete(9, { localhostUrl, verifiedStatus });
+  log(`步骤 10：${verifiedStatus}`, 'ok');
+  reportComplete(10, { localhostUrl, verifiedStatus });
 }

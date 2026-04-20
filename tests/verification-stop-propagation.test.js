@@ -1,9 +1,10 @@
 const assert = require('assert');
 const fs = require('fs');
 
-const source = fs.readFileSync('background.js', 'utf8');
+const helperSource = fs.readFileSync('background.js', 'utf8');
+const verificationFlowSource = fs.readFileSync('background/verification-flow.js', 'utf8');
 
-function extractFunction(name) {
+function extractFunction(source, name) {
   const markers = [`async function ${name}(`, `function ${name}(`];
   const start = markers
     .map(marker => source.indexOf(marker))
@@ -51,16 +52,18 @@ function extractFunction(name) {
 }
 
 async function testPollFreshVerificationCodeRethrowsStop() {
-  const bundle = [
-    extractFunction('isStopError'),
-    extractFunction('throwIfStopped'),
-    extractFunction('pollFreshVerificationCode'),
+  const helperBundle = [
+    extractFunction(helperSource, 'isStopError'),
+    extractFunction(helperSource, 'throwIfStopped'),
   ].join('\n');
 
-  const api = new Function(`
+const api = new Function('verificationFlowSource', `
+const self = {};
 let stopRequested = false;
 const STOP_ERROR_MESSAGE = '流程已被用户停止。';
 const HOTMAIL_PROVIDER = 'hotmail-api';
+const LUCKMAIL_PROVIDER = 'luckmail-api';
+const CLOUDFLARE_TEMP_EMAIL_PROVIDER = 'cloudflare-temp-email';
 const VERIFICATION_POLL_MAX_ROUNDS = 5;
 const logs = [];
 let resendCalls = 0;
@@ -71,14 +74,11 @@ function getHotmailVerificationPollConfig() {
 async function pollHotmailVerificationCode() {
   throw new Error('hotmail path should not run in this test');
 }
-function getVerificationCodeStateKey(step) {
-  return step === 4 ? 'lastSignupCode' : 'lastLoginCode';
+async function pollLuckmailVerificationCode() {
+  throw new Error('luckmail path should not run in this test');
 }
-function getVerificationPollPayload(step, state, overrides = {}) {
-  return {
-    filterAfterTimestamp: 123,
-    ...overrides,
-  };
+async function pollCloudflareTempEmailVerificationCode() {
+  throw new Error('cloudflare path should not run in this test');
 }
 async function sendToMailContentScriptResilient() {
   throw new Error(STOP_ERROR_MESSAGE);
@@ -90,15 +90,41 @@ async function addLog(message, level) {
   logs.push({ message, level });
 }
 
-${bundle}
+${helperBundle}
+${verificationFlowSource}
+
+const helpers = self.MultiPageBackgroundVerificationFlow.createVerificationFlowHelpers({
+  addLog,
+  chrome: {},
+  CLOUDFLARE_TEMP_EMAIL_PROVIDER,
+  completeStepFromBackground: async () => {},
+  confirmCustomVerificationStepBypassRequest: async () => ({ confirmed: true }),
+  getHotmailVerificationPollConfig,
+  getHotmailVerificationRequestTimestamp: () => 123,
+  getState: async () => ({}),
+  getTabId: async () => null,
+  HOTMAIL_PROVIDER,
+  isStopError,
+  LUCKMAIL_PROVIDER,
+  pollCloudflareTempEmailVerificationCode,
+  pollHotmailVerificationCode,
+  pollLuckmailVerificationCode,
+  sendToContentScript: async () => ({}),
+  sendToMailContentScriptResilient,
+  setState: async () => {},
+  setStepStatus: async () => {},
+  sleepWithStop: async () => {},
+  throwIfStopped,
+  VERIFICATION_POLL_MAX_ROUNDS,
+});
 
 return {
-  pollFreshVerificationCode,
+  pollFreshVerificationCode: helpers.pollFreshVerificationCode,
   snapshot() {
     return { logs, resendCalls };
   },
 };
-`)();
+`)(verificationFlowSource);
 
   let error = null;
   try {
@@ -114,54 +140,63 @@ return {
 }
 
 async function testResolveVerificationStepRethrowsStopFromFreshRequest() {
-  const bundle = [
-    extractFunction('isStopError'),
-    extractFunction('resolveVerificationStep'),
+  const helperBundle = [
+    extractFunction(helperSource, 'isStopError'),
   ].join('\n');
 
-  const api = new Function(`
+const api = new Function('verificationFlowSource', `
+const self = {};
 const STOP_ERROR_MESSAGE = '流程已被用户停止。';
 const HOTMAIL_PROVIDER = 'hotmail-api';
+const LUCKMAIL_PROVIDER = 'luckmail-api';
+const CLOUDFLARE_TEMP_EMAIL_PROVIDER = 'cloudflare-temp-email';
 const logs = [];
 let pollCalls = 0;
-
-function getVerificationCodeStateKey(step) {
-  return step === 4 ? 'lastSignupCode' : 'lastLoginCode';
-}
-function getHotmailVerificationPollConfig() {
-  return {};
-}
-function getVerificationCodeLabel(step) {
-  return step === 4 ? '注册' : '登录';
-}
-function isStep7RestartFromStep6Error() {
-  return false;
-}
-async function requestVerificationCodeResend() {
-  throw new Error(STOP_ERROR_MESSAGE);
-}
 async function addLog(message, level) {
   logs.push({ message, level });
 }
-async function pollFreshVerificationCode() {
-  pollCalls += 1;
-  return { code: '123456', emailTimestamp: Date.now() };
-}
-async function submitVerificationCode() {
-  throw new Error('submit should not run in this test');
-}
-async function setState() {}
-async function completeStepFromBackground() {}
+const chrome = { tabs: { async update() {} } };
 
-${bundle}
+${helperBundle}
+${verificationFlowSource}
+
+const helpers = self.MultiPageBackgroundVerificationFlow.createVerificationFlowHelpers({
+  addLog,
+  chrome,
+  CLOUDFLARE_TEMP_EMAIL_PROVIDER,
+  completeStepFromBackground: async () => {},
+  confirmCustomVerificationStepBypassRequest: async () => ({ confirmed: true }),
+  getHotmailVerificationPollConfig: () => ({}),
+  getHotmailVerificationRequestTimestamp: () => 123,
+  getState: async () => ({}),
+  getTabId: async () => 1,
+  HOTMAIL_PROVIDER,
+  isStopError,
+  LUCKMAIL_PROVIDER,
+  pollCloudflareTempEmailVerificationCode: async () => ({}),
+  pollHotmailVerificationCode: async () => ({}),
+  pollLuckmailVerificationCode: async () => ({}),
+  sendToContentScript: async () => {
+    throw new Error(STOP_ERROR_MESSAGE);
+  },
+  sendToMailContentScriptResilient: async () => {
+    pollCalls += 1;
+    return {};
+  },
+  setState: async () => {},
+  setStepStatus: async () => {},
+  sleepWithStop: async () => {},
+  throwIfStopped: () => {},
+  VERIFICATION_POLL_MAX_ROUNDS: 5,
+});
 
 return {
-  resolveVerificationStep,
+  resolveVerificationStep: helpers.resolveVerificationStep,
   snapshot() {
     return { logs, pollCalls };
   },
 };
-`)();
+`)(verificationFlowSource);
 
   let error = null;
   try {

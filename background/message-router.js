@@ -1,0 +1,713 @@
+(function attachBackgroundMessageRouter(root, factory) {
+  root.MultiPageBackgroundMessageRouter = factory();
+})(typeof self !== 'undefined' ? self : globalThis, function createBackgroundMessageRouterModule() {
+  function createMessageRouter(deps = {}) {
+    const {
+      addLog,
+      appendAccountRunRecord,
+      batchUpdateLuckmailPurchases,
+      buildLocalhostCleanupPrefix,
+      buildLuckmailSessionSettingsPayload,
+      buildPersistentSettingsPayload,
+      broadcastDataUpdate,
+      cancelScheduledAutoRun,
+      checkIcloudSession,
+      clearAccountRunHistory,
+      deleteAccountRunHistoryRecords,
+      clearAutoRunTimerAlarm,
+      clearLuckmailRuntimeState,
+      clearStopRequest,
+      closeLocalhostCallbackTabs,
+      closeTabsByUrlPrefix,
+      deleteHotmailAccount,
+      deleteHotmailAccounts,
+      deleteIcloudAlias,
+      deleteUsedIcloudAliases,
+      disableUsedLuckmailPurchases,
+      doesStepUseCompletionSignal,
+      ensureManualInteractionAllowed,
+      executeStep,
+      executeStepViaCompletionSignal,
+      exportSettingsBundle,
+      fetchGeneratedEmail,
+      finalizeStep3Completion,
+      finalizeIcloudAliasAfterSuccessfulFlow,
+      findHotmailAccount,
+      flushCommand,
+      getCurrentLuckmailPurchase,
+      getPendingAutoRunTimerPlan,
+      getSourceLabel,
+      getState,
+      getStopRequested,
+      handleAutoRunLoopUnhandledError,
+      importSettingsBundle,
+      invalidateDownstreamAfterStepRestart,
+      isCloudflareSecurityBlockedError,
+      isAutoRunLockedState,
+      isHotmailProvider,
+      isLocalhostOAuthCallbackUrl,
+      isLuckmailProvider,
+      isStopError,
+      launchAutoRunTimerPlan,
+      listIcloudAliases,
+      listLuckmailPurchasesForManagement,
+      normalizeHotmailAccounts,
+      normalizeRunCount,
+      AUTO_RUN_TIMER_KIND_SCHEDULED_START,
+      notifyStepComplete,
+      notifyStepError,
+      patchHotmailAccount,
+      pollContributionStatus,
+      registerTab,
+      requestStop,
+      handleCloudflareSecurityBlocked,
+      resetState,
+      resumeAutoRun,
+      scheduleAutoRun,
+      selectLuckmailPurchase,
+      setCurrentHotmailAccount,
+      setContributionMode,
+      setEmailState,
+      setEmailStateSilently,
+      setIcloudAliasPreservedState,
+      setIcloudAliasUsedState,
+      setLuckmailPurchaseDisabledState,
+      setLuckmailPurchasePreservedState,
+      setLuckmailPurchaseUsedState,
+      setPersistentSettings,
+      setState,
+      setStepStatus,
+      skipAutoRunCountdown,
+      skipStep,
+      startContributionFlow,
+      startAutoRunLoop,
+      syncHotmailAccounts,
+      testHotmailAccountMailAccess,
+      upsertHotmailAccount,
+      verifyHotmailAccount,
+    } = deps;
+
+    async function appendManualAccountRunRecordIfNeeded(status, stateOverride = null, reason = '') {
+      if (typeof appendAccountRunRecord !== 'function') {
+        return null;
+      }
+
+      const state = stateOverride || await getState();
+      if (isAutoRunLockedState(state)) {
+        return null;
+      }
+
+      return appendAccountRunRecord(status, state, reason);
+    }
+
+    async function handleStepData(step, payload) {
+      switch (step) {
+        case 1: {
+          const updates = {};
+          if (payload.oauthUrl) {
+            updates.oauthUrl = payload.oauthUrl;
+            broadcastDataUpdate({ oauthUrl: payload.oauthUrl });
+          }
+          if (payload.sub2apiSessionId !== undefined) updates.sub2apiSessionId = payload.sub2apiSessionId || null;
+          if (payload.sub2apiOAuthState !== undefined) updates.sub2apiOAuthState = payload.sub2apiOAuthState || null;
+          if (payload.sub2apiGroupId !== undefined) updates.sub2apiGroupId = payload.sub2apiGroupId || null;
+          if (payload.sub2apiDraftName !== undefined) updates.sub2apiDraftName = payload.sub2apiDraftName || null;
+          if (payload.sub2apiProxyId !== undefined) updates.sub2apiProxyId = payload.sub2apiProxyId || null;
+          if (Object.keys(updates).length) {
+            await setState(updates);
+          }
+          break;
+        }
+        case 2:
+          if (payload.email) {
+            await setEmailState(payload.email);
+          }
+          if (payload.skippedPasswordStep) {
+            const latestState = await getState();
+            const step3Status = latestState.stepStatuses?.[3];
+            if (step3Status !== 'running' && step3Status !== 'completed' && step3Status !== 'manual_completed') {
+              await setStepStatus(3, 'skipped');
+              await addLog('步骤 2：提交邮箱后页面直接进入邮箱验证码页，已自动跳过步骤 3。', 'warn');
+            }
+          }
+          break;
+        case 3:
+          if (payload.email) await setEmailState(payload.email);
+          if (payload.signupVerificationRequestedAt) {
+            await setState({ signupVerificationRequestedAt: payload.signupVerificationRequestedAt });
+          }
+          if (payload.loginVerificationRequestedAt) {
+            await setState({ loginVerificationRequestedAt: payload.loginVerificationRequestedAt });
+          }
+          break;
+        case 7:
+          if (payload.loginVerificationRequestedAt) {
+            await setState({ loginVerificationRequestedAt: payload.loginVerificationRequestedAt });
+          }
+          break;
+        case 4:
+          await setState({
+            lastEmailTimestamp: payload.emailTimestamp || null,
+            signupVerificationRequestedAt: null,
+          });
+          break;
+        case 8:
+          await setState({
+            lastEmailTimestamp: payload.emailTimestamp || null,
+            loginVerificationRequestedAt: null,
+          });
+          break;
+        case 9:
+          if (payload.localhostUrl) {
+            if (!isLocalhostOAuthCallbackUrl(payload.localhostUrl)) {
+              throw new Error('步骤 9 返回了无效的 localhost OAuth 回调地址。');
+            }
+            await setState({ localhostUrl: payload.localhostUrl });
+            broadcastDataUpdate({ localhostUrl: payload.localhostUrl });
+          }
+          break;
+        case 10: {
+          if (payload.localhostUrl) {
+            await closeLocalhostCallbackTabs(payload.localhostUrl);
+          }
+          const latestState = await getState();
+          if (latestState.currentHotmailAccountId && isHotmailProvider(latestState)) {
+            await patchHotmailAccount(latestState.currentHotmailAccountId, {
+              used: true,
+              lastUsedAt: Date.now(),
+            });
+            await addLog('当前 Hotmail 账号已自动标记为已用。', 'ok');
+          }
+          if (isLuckmailProvider(latestState)) {
+            const currentPurchase = getCurrentLuckmailPurchase(latestState);
+            if (currentPurchase?.id) {
+              await setLuckmailPurchaseUsedState(currentPurchase.id, true);
+              await addLog(`当前 LuckMail 邮箱 ${currentPurchase.email_address} 已在本地标记为已用。`, 'ok');
+            }
+            await clearLuckmailRuntimeState({ clearEmail: true });
+            await addLog('当前 LuckMail 邮箱运行态已清空，下轮将优先复用未用邮箱或重新购买邮箱。', 'ok');
+          }
+          const localhostPrefix = buildLocalhostCleanupPrefix(payload.localhostUrl);
+          if (localhostPrefix) {
+            await closeTabsByUrlPrefix(localhostPrefix, {
+              excludeUrls: [payload.localhostUrl],
+              excludeLocalhostCallbacks: true,
+            });
+          }
+          await finalizeIcloudAliasAfterSuccessfulFlow(latestState);
+          break;
+        }
+        default:
+          break;
+      }
+    }
+
+    async function handleMessage(message, sender) {
+      switch (message.type) {
+        case 'CONTENT_SCRIPT_READY': {
+          const tabId = sender.tab?.id;
+          if (tabId && message.source) {
+            await registerTab(message.source, tabId);
+            flushCommand(message.source, tabId);
+            await addLog(`内容脚本已就绪：${getSourceLabel(message.source)}（标签页 ${tabId}）`);
+          }
+          return { ok: true };
+        }
+
+        case 'LOG': {
+          const { message: msg, level } = message.payload;
+          await addLog(`[${getSourceLabel(message.source)}] ${msg}`, level);
+          return { ok: true };
+        }
+
+        case 'STEP_COMPLETE': {
+          if (getStopRequested()) {
+            await setStepStatus(message.step, 'stopped');
+            await appendManualAccountRunRecordIfNeeded(`step${message.step}_stopped`, null, '流程已被用户停止。');
+            notifyStepError(message.step, '流程已被用户停止。');
+            return { ok: true };
+          }
+          try {
+            if (message.step === 3 && typeof finalizeStep3Completion === 'function') {
+              await finalizeStep3Completion(message.payload || {});
+            }
+          } catch (error) {
+            if (typeof isCloudflareSecurityBlockedError === 'function' && isCloudflareSecurityBlockedError(error)) {
+              const userMessage = typeof handleCloudflareSecurityBlocked === 'function'
+                ? await handleCloudflareSecurityBlocked(error)
+                : (error?.message || String(error || ''));
+              notifyStepError(message.step, '流程已被用户停止。');
+              return { ok: true, error: userMessage };
+            }
+            const errorMessage = error?.message || String(error || '步骤 3 提交后确认失败');
+            await setStepStatus(message.step, 'failed');
+            await addLog(`步骤 ${message.step} 失败：${errorMessage}`, 'error');
+            await appendManualAccountRunRecordIfNeeded(`step${message.step}_failed`, null, errorMessage);
+            notifyStepError(message.step, errorMessage);
+            return { ok: true, error: errorMessage };
+          }
+
+          const completionState = message.step === 10 ? await getState() : null;
+          await setStepStatus(message.step, 'completed');
+          await addLog(`步骤 ${message.step} 已完成`, 'ok');
+          await handleStepData(message.step, message.payload);
+          if (message.step === 10 && typeof appendAccountRunRecord === 'function') {
+            await appendAccountRunRecord('success', completionState);
+          }
+          notifyStepComplete(message.step, message.payload);
+          return { ok: true };
+        }
+
+        case 'STEP_ERROR': {
+          if (typeof isCloudflareSecurityBlockedError === 'function' && isCloudflareSecurityBlockedError(message.error)) {
+            const userMessage = typeof handleCloudflareSecurityBlocked === 'function'
+              ? await handleCloudflareSecurityBlocked(message.error)
+              : (typeof message.error === 'string' ? message.error : String(message.error || ''));
+            notifyStepError(message.step, '流程已被用户停止。');
+            return { ok: true, error: userMessage };
+          }
+          if (isStopError(message.error)) {
+            await setStepStatus(message.step, 'stopped');
+            await addLog(`步骤 ${message.step} 已被用户停止`, 'warn');
+            await appendManualAccountRunRecordIfNeeded(`step${message.step}_stopped`, null, message.error);
+            notifyStepError(message.step, message.error);
+          } else {
+            await setStepStatus(message.step, 'failed');
+            await addLog(`步骤 ${message.step} 失败：${message.error}`, 'error');
+            await appendManualAccountRunRecordIfNeeded(`step${message.step}_failed`, null, message.error);
+            notifyStepError(message.step, message.error);
+          }
+          return { ok: true };
+        }
+
+        case 'GET_STATE': {
+          return await getState();
+        }
+
+        case 'RESET': {
+          clearStopRequest();
+          await clearAutoRunTimerAlarm();
+          await resetState();
+          await addLog('流程已重置', 'info');
+          return { ok: true };
+        }
+
+        case 'SET_CONTRIBUTION_MODE': {
+          const enabled = Boolean(message.payload?.enabled);
+          const state = await ensureManualInteractionAllowed(enabled ? '进入贡献模式' : '退出贡献模式');
+          if (Object.values(state.stepStatuses || {}).some((status) => status === 'running')) {
+            throw new Error(enabled ? '当前有步骤正在执行，无法进入贡献模式。' : '当前有步骤正在执行，无法退出贡献模式。');
+          }
+          if (typeof setContributionMode !== 'function') {
+            throw new Error('贡献模式切换能力未接入。');
+          }
+          return {
+            ok: true,
+            state: await setContributionMode(enabled),
+          };
+        }
+
+        case 'START_CONTRIBUTION_FLOW': {
+          const state = await ensureManualInteractionAllowed('开始贡献');
+          if (Object.values(state.stepStatuses || {}).some((status) => status === 'running')) {
+            throw new Error('当前有步骤正在执行，无法开始贡献流程。');
+          }
+          if (typeof startContributionFlow !== 'function') {
+            throw new Error('贡献 OAuth 流程尚未接入。');
+          }
+          return {
+            ok: true,
+            state: await startContributionFlow({
+              nickname: message.payload?.nickname,
+              qq: message.payload?.qq,
+            }),
+          };
+        }
+
+        case 'SET_CONTRIBUTION_PROFILE': {
+          const state = await getState();
+          if (!state?.contributionMode) {
+            throw new Error('请先进入贡献模式。');
+          }
+          const nickname = String(message.payload?.nickname || '').trim();
+          const qq = String(message.payload?.qq || '').trim();
+          if (qq && !/^\d{1,20}$/.test(qq)) {
+            throw new Error('QQ 只能填写数字，且长度不能超过 20 位。');
+          }
+          await setState({
+            contributionNickname: nickname,
+            contributionQq: qq,
+          });
+          return {
+            ok: true,
+            state: await getState(),
+          };
+        }
+
+        case 'POLL_CONTRIBUTION_STATUS': {
+          if (typeof pollContributionStatus !== 'function') {
+            throw new Error('贡献状态轮询能力尚未接入。');
+          }
+          return {
+            ok: true,
+            state: await pollContributionStatus({
+              reason: message.payload?.reason || 'sidepanel_poll',
+            }),
+          };
+        }
+
+        case 'CLEAR_ACCOUNT_RUN_HISTORY': {
+          const state = await getState();
+          if (isAutoRunLockedState(state)) {
+            throw new Error('自动流程运行中，当前不能清理邮箱记录。');
+          }
+          if (typeof clearAccountRunHistory !== 'function') {
+            return { ok: true, clearedCount: 0 };
+          }
+          const result = await clearAccountRunHistory(state);
+          return { ok: true, ...result };
+        }
+
+        case 'DELETE_ACCOUNT_RUN_HISTORY_RECORDS': {
+          const state = await getState();
+          if (isAutoRunLockedState(state)) {
+            throw new Error('自动流程运行中，当前不能删除邮箱记录。');
+          }
+          if (typeof deleteAccountRunHistoryRecords !== 'function') {
+            return { ok: true, deletedCount: 0, remainingCount: 0 };
+          }
+          const recordIds = Array.isArray(message.payload?.recordIds) ? message.payload.recordIds : [];
+          const result = await deleteAccountRunHistoryRecords(recordIds, state);
+          return { ok: true, ...result };
+        }
+
+        case 'EXECUTE_STEP': {
+          clearStopRequest();
+          if (message.source === 'sidepanel') {
+            await ensureManualInteractionAllowed('手动执行步骤');
+          }
+          const step = message.payload.step;
+          if (message.source === 'sidepanel') {
+            await invalidateDownstreamAfterStepRestart(step, { logLabel: `步骤 ${step} 重新执行` });
+          }
+          if (message.payload.email) {
+            await setEmailState(message.payload.email);
+          }
+          if (message.payload.emailPrefix !== undefined) {
+            await setPersistentSettings({ emailPrefix: message.payload.emailPrefix });
+            await setState({ emailPrefix: message.payload.emailPrefix });
+          }
+          if (doesStepUseCompletionSignal(step)) {
+            await executeStepViaCompletionSignal(step);
+          } else {
+            await executeStep(step);
+          }
+          return { ok: true };
+        }
+
+        case 'AUTO_RUN': {
+          clearStopRequest();
+          if (Boolean(message.payload?.contributionMode) && typeof setContributionMode === 'function') {
+            await setContributionMode(true);
+            if (typeof setState === 'function') {
+              const contributionNickname = String(message.payload?.contributionNickname || '').trim();
+              const contributionQq = String(message.payload?.contributionQq || '').trim();
+              await setState({
+                contributionNickname,
+                contributionQq,
+              });
+            }
+          }
+          const state = await getState();
+          if (getPendingAutoRunTimerPlan(state)) {
+            throw new Error('已有自动运行倒计时计划，请先取消或立即开始。');
+          }
+          const totalRuns = normalizeRunCount(message.payload?.totalRuns || 1);
+          const autoRunSkipFailures = Boolean(message.payload?.autoRunSkipFailures);
+          const mode = message.payload?.mode === 'continue' ? 'continue' : 'restart';
+          await setState({ autoRunSkipFailures });
+          startAutoRunLoop(totalRuns, { autoRunSkipFailures, mode });
+          return { ok: true };
+        }
+
+        case 'SCHEDULE_AUTO_RUN': {
+          clearStopRequest();
+          if (Boolean(message.payload?.contributionMode) && typeof setContributionMode === 'function') {
+            await setContributionMode(true);
+            if (typeof setState === 'function') {
+              const contributionNickname = String(message.payload?.contributionNickname || '').trim();
+              const contributionQq = String(message.payload?.contributionQq || '').trim();
+              await setState({
+                contributionNickname,
+                contributionQq,
+              });
+            }
+          }
+          const totalRuns = normalizeRunCount(message.payload?.totalRuns || 1);
+          return await scheduleAutoRun(totalRuns, {
+            delayMinutes: message.payload?.delayMinutes,
+            autoRunSkipFailures: Boolean(message.payload?.autoRunSkipFailures),
+            mode: message.payload?.mode,
+          });
+        }
+
+        case 'START_SCHEDULED_AUTO_RUN_NOW': {
+          clearStopRequest();
+          const started = await launchAutoRunTimerPlan('manual', {
+            expectedKinds: [AUTO_RUN_TIMER_KIND_SCHEDULED_START],
+          });
+          if (!started) {
+            throw new Error('当前没有可立即开始的倒计时计划。');
+          }
+          return { ok: true };
+        }
+
+        case 'CANCEL_SCHEDULED_AUTO_RUN': {
+          const cancelled = await cancelScheduledAutoRun();
+          if (!cancelled) {
+            throw new Error('当前没有可取消的倒计时计划。');
+          }
+          return { ok: true };
+        }
+
+        case 'SKIP_AUTO_RUN_COUNTDOWN': {
+          clearStopRequest();
+          const skipped = await skipAutoRunCountdown();
+          if (!skipped) {
+            throw new Error('当前没有可立即开始的倒计时。');
+          }
+          return { ok: true };
+        }
+
+        case 'RESUME_AUTO_RUN': {
+          clearStopRequest();
+          if (message.payload.email) {
+            await setEmailState(message.payload.email);
+          }
+          resumeAutoRun().catch((error) => {
+            handleAutoRunLoopUnhandledError(error).catch(() => {});
+          });
+          return { ok: true };
+        }
+
+        case 'TAKEOVER_AUTO_RUN': {
+          await requestStop({ logMessage: '已确认手动接管，正在停止自动流程并切换为手动控制...' });
+          await addLog('自动流程已切换为手动控制。', 'warn');
+          return { ok: true };
+        }
+
+        case 'SKIP_STEP': {
+          const step = Number(message.payload?.step);
+          return await skipStep(step);
+        }
+
+        case 'SAVE_SETTING': {
+          const updates = buildPersistentSettingsPayload(message.payload || {});
+          const sessionUpdates = buildLuckmailSessionSettingsPayload(message.payload || {});
+          await setPersistentSettings(updates);
+          await setState({
+            ...updates,
+            ...sessionUpdates,
+          });
+          return { ok: true, state: await getState() };
+        }
+
+        case 'EXPORT_SETTINGS': {
+          return { ok: true, ...(await exportSettingsBundle()) };
+        }
+
+        case 'IMPORT_SETTINGS': {
+          const state = await importSettingsBundle(message.payload?.config || null);
+          return { ok: true, state };
+        }
+
+        case 'UPSERT_HOTMAIL_ACCOUNT': {
+          const account = await upsertHotmailAccount(message.payload || {});
+          return { ok: true, account };
+        }
+
+        case 'DELETE_HOTMAIL_ACCOUNT': {
+          await deleteHotmailAccount(String(message.payload?.accountId || ''));
+          return { ok: true };
+        }
+
+        case 'DELETE_HOTMAIL_ACCOUNTS': {
+          const result = await deleteHotmailAccounts(String(message.payload?.mode || 'all'));
+          return { ok: true, ...result };
+        }
+
+        case 'SELECT_HOTMAIL_ACCOUNT': {
+          const account = await setCurrentHotmailAccount(String(message.payload?.accountId || ''), {
+            markUsed: false,
+            syncEmail: true,
+          });
+          return { ok: true, account };
+        }
+
+        case 'PATCH_HOTMAIL_ACCOUNT': {
+          const account = await patchHotmailAccount(
+            String(message.payload?.accountId || ''),
+            message.payload?.updates || {}
+          );
+          return { ok: true, account };
+        }
+
+        case 'VERIFY_HOTMAIL_ACCOUNT':
+        case 'AUTHORIZE_HOTMAIL_ACCOUNT': {
+          const accountId = String(message.payload?.accountId || '');
+          try {
+            const result = await verifyHotmailAccount(accountId);
+            await setCurrentHotmailAccount(result.account.id, { markUsed: false, syncEmail: true });
+            await addLog(`Hotmail 账号 ${result.account.email} 校验通过，可直接用于收信。`, 'ok');
+            return { ok: true, account: result.account, messageCount: result.messageCount };
+          } catch (err) {
+            const state = await getState();
+            const accounts = normalizeHotmailAccounts(state.hotmailAccounts);
+            const target = findHotmailAccount(accounts, accountId);
+            if (target) {
+              target.status = 'error';
+              target.lastError = err.message;
+              await syncHotmailAccounts(accounts.map((item) => (item.id === target.id ? target : item)));
+            }
+            throw err;
+          }
+        }
+
+        case 'TEST_HOTMAIL_ACCOUNT': {
+          const result = await testHotmailAccountMailAccess(String(message.payload?.accountId || ''));
+          return { ok: true, ...result };
+        }
+
+        case 'LIST_LUCKMAIL_PURCHASES': {
+          const purchases = await listLuckmailPurchasesForManagement();
+          return { ok: true, purchases };
+        }
+
+        case 'SELECT_LUCKMAIL_PURCHASE': {
+          const purchase = await selectLuckmailPurchase(message.payload?.purchaseId);
+          return { ok: true, purchase };
+        }
+
+        case 'SET_LUCKMAIL_PURCHASE_USED_STATE': {
+          const result = await setLuckmailPurchaseUsedState(message.payload?.purchaseId, Boolean(message.payload?.used));
+          return { ok: true, ...result };
+        }
+
+        case 'SET_LUCKMAIL_PURCHASE_PRESERVED_STATE': {
+          const purchase = await setLuckmailPurchasePreservedState(message.payload?.purchaseId, Boolean(message.payload?.preserved));
+          return { ok: true, purchase };
+        }
+
+        case 'SET_LUCKMAIL_PURCHASE_DISABLED_STATE': {
+          const purchase = await setLuckmailPurchaseDisabledState(message.payload?.purchaseId, Boolean(message.payload?.disabled));
+          return { ok: true, purchase };
+        }
+
+        case 'BATCH_UPDATE_LUCKMAIL_PURCHASES': {
+          const result = await batchUpdateLuckmailPurchases(message.payload || {});
+          return { ok: true, ...result };
+        }
+
+        case 'DISABLE_USED_LUCKMAIL_PURCHASES': {
+          const result = await disableUsedLuckmailPurchases();
+          return { ok: true, ...result };
+        }
+
+        case 'SET_EMAIL_STATE': {
+          const state = await getState();
+          if (isAutoRunLockedState(state)) {
+            throw new Error('自动流程运行中，当前不能手动修改邮箱。');
+          }
+          const email = String(message.payload?.email || '').trim() || null;
+          await setEmailStateSilently(email);
+          return { ok: true, email };
+        }
+
+        case 'SAVE_EMAIL': {
+          const state = await getState();
+          if (isAutoRunLockedState(state)) {
+            throw new Error('自动流程运行中，当前不能手动修改邮箱。');
+          }
+          await setEmailState(message.payload.email);
+          await resumeAutoRun();
+          return { ok: true, email: message.payload.email };
+        }
+
+        case 'FETCH_GENERATED_EMAIL': {
+          clearStopRequest();
+          const state = await getState();
+          if (isAutoRunLockedState(state)) {
+            throw new Error('自动流程运行中，当前不能手动获取邮箱。');
+          }
+          const email = await fetchGeneratedEmail(state, message.payload || {});
+          await resumeAutoRun();
+          return { ok: true, email };
+        }
+
+        case 'FETCH_DUCK_EMAIL': {
+          clearStopRequest();
+          const state = await getState();
+          if (isAutoRunLockedState(state)) {
+            throw new Error('自动流程运行中，当前不能手动获取邮箱。');
+          }
+          const email = await fetchGeneratedEmail(state, { ...(message.payload || {}), generator: 'duck' });
+          await resumeAutoRun();
+          return { ok: true, email };
+        }
+
+        case 'CHECK_ICLOUD_SESSION': {
+          clearStopRequest();
+          return await checkIcloudSession();
+        }
+
+        case 'LIST_ICLOUD_ALIASES': {
+          clearStopRequest();
+          const aliases = await listIcloudAliases();
+          return { ok: true, aliases };
+        }
+
+        case 'SET_ICLOUD_ALIAS_USED_STATE': {
+          clearStopRequest();
+          const result = await setIcloudAliasUsedState(message.payload || {});
+          return { ok: true, ...result };
+        }
+
+        case 'SET_ICLOUD_ALIAS_PRESERVED_STATE': {
+          clearStopRequest();
+          const result = await setIcloudAliasPreservedState(message.payload || {});
+          return { ok: true, ...result };
+        }
+
+        case 'DELETE_ICLOUD_ALIAS': {
+          clearStopRequest();
+          const result = await deleteIcloudAlias(message.payload || {});
+          return { ok: true, ...result };
+        }
+
+        case 'DELETE_USED_ICLOUD_ALIASES': {
+          clearStopRequest();
+          const result = await deleteUsedIcloudAliases();
+          return { ok: true, ...result };
+        }
+
+        case 'STOP_FLOW': {
+          await requestStop();
+          return { ok: true };
+        }
+
+        default:
+          console.warn('Unknown message type:', message.type);
+          return { error: `Unknown message type: ${message.type}` };
+      }
+    }
+
+    return {
+      handleMessage,
+      handleStepData,
+    };
+  }
+
+  return {
+    createMessageRouter,
+  };
+});

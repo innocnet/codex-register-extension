@@ -1,0 +1,631 @@
+// content/mail-2925.js - Content script for 2925 Mail (steps 4, 8)
+// Injected dynamically on: 2925.com
+
+const MAIL2925_PREFIX = '[MultiPage:mail-2925]';
+const isTopFrame = window === window.top;
+
+console.log(MAIL2925_PREFIX, 'Content script loaded on', location.href, 'frame:', isTopFrame ? 'top' : 'child');
+
+if (!isTopFrame) {
+  console.log(MAIL2925_PREFIX, 'Skipping child frame');
+} else {
+
+let seenCodes = new Set();
+let seenCodeSessionKey = '';
+let seenCodesReadyPromise = null;
+
+async function loadSeenCodes() {
+  try {
+    const data = await chrome.storage.session.get(['seen2925CodeState', 'seen2925Codes']);
+    const state = data?.seen2925CodeState || null;
+    if (state && typeof state === 'object') {
+      seenCodeSessionKey = String(state.sessionKey || '');
+      if (Array.isArray(state.codes)) {
+        seenCodes = new Set(state.codes);
+      }
+      console.log(MAIL2925_PREFIX, `Loaded ${seenCodes.size} seen codes for session ${seenCodeSessionKey || 'default'}`);
+      return;
+    }
+
+    if (data.seen2925Codes && Array.isArray(data.seen2925Codes)) {
+      seenCodes = new Set(data.seen2925Codes);
+      console.log(MAIL2925_PREFIX, `Loaded ${seenCodes.size} previously seen codes`);
+    }
+  } catch (err) {
+    console.warn(MAIL2925_PREFIX, 'Session storage unavailable, using in-memory seen codes:', err?.message || err);
+  }
+}
+
+seenCodesReadyPromise = loadSeenCodes();
+
+async function persistSeenCodes() {
+  try {
+    await chrome.storage.session.set({
+      seen2925Codes: [...seenCodes],
+      seen2925CodeState: {
+        sessionKey: seenCodeSessionKey,
+        codes: [...seenCodes],
+      },
+    });
+  } catch (err) {
+    console.warn(MAIL2925_PREFIX, 'Could not persist seen codes, continuing in-memory only:', err?.message || err);
+  }
+}
+
+function buildSeenCodeSessionKey(step, payload = {}) {
+  const explicitSessionKey = String(payload?.sessionKey || '').trim();
+  if (explicitSessionKey) {
+    return explicitSessionKey;
+  }
+  const timestamp = Number(payload?.filterAfterTimestamp);
+  if (Number.isFinite(timestamp) && timestamp > 0) {
+    return `${step}:${timestamp}`;
+  }
+  return `${step}:default`;
+}
+
+async function ensureSeenCodesSession(step, payload = {}) {
+  if (seenCodesReadyPromise) {
+    await seenCodesReadyPromise;
+    seenCodesReadyPromise = null;
+  }
+
+  const nextSessionKey = buildSeenCodeSessionKey(step, payload);
+  if (seenCodeSessionKey === nextSessionKey) {
+    return;
+  }
+
+  seenCodeSessionKey = nextSessionKey;
+  seenCodes = new Set();
+  await persistSeenCodes();
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'POLL_EMAIL') {
+    resetStopState();
+    handlePollEmail(message.step, message.payload).then((result) => {
+      sendResponse(result);
+    }).catch((err) => {
+      if (isStopError(err)) {
+        log(`步骤 ${message.step}：已被用户停止。`, 'warn');
+        sendResponse({ stopped: true, error: err.message });
+        return;
+      }
+
+      log(`步骤 ${message.step}：邮箱轮询失败：${err.message}`, 'warn');
+      sendResponse({ error: err.message });
+    });
+    return true;
+  }
+
+  if (message.type === 'DELETE_ALL_EMAILS') {
+    Promise.resolve(deleteAllMailboxEmails(message.step)).then((deleted) => {
+      sendResponse({ ok: true, deleted });
+    }).catch((err) => {
+      sendResponse({ ok: false, error: err?.message || String(err || '删除邮件失败') });
+    });
+    return true;
+  }
+
+  return false;
+});
+
+const MAIL_ITEM_SELECTORS = [
+  '.mail-item',
+  '.letter-item',
+  '[class*="mailItem"]',
+  '[class*="mail-item"]',
+  '[class*="MailItem"]',
+  '.el-table__row',
+  'tr[class*="mail"]',
+  '[class*="listItem"]',
+  '[class*="list-item"]',
+  'li[class*="mail"]',
+];
+const MAIL_ITEM_SELECTOR_GROUP = MAIL_ITEM_SELECTORS.join(', ');
+const MAIL_REFRESH_SELECTORS = [
+  '[class*="refresh"]',
+  '[title*="刷新"]',
+  '[aria-label*="刷新"]',
+  '[class*="Refresh"]',
+];
+const MAIL_INBOX_SELECTORS = [
+  'a[href*="mailList"]',
+  '[class*="inbox"]',
+  '[class*="Inbox"]',
+  '[title*="收件箱"]',
+];
+const MAIL_DELETE_SELECTORS = [
+  '[class*="delete"]',
+  '[title*="删除"]',
+  '[aria-label*="删除"]',
+  '[class*="Delete"]',
+];
+const MAIL_SELECT_ALL_SELECTORS = [
+  'input[type="checkbox"]',
+  '[role="checkbox"]',
+  '.el-checkbox__input',
+  '.el-checkbox',
+  'label[class*="checkbox"]',
+  '[class*="checkbox"]',
+];
+const MAIL_ACTION_CANDIDATE_SELECTORS = 'button, [role="button"], a, label, span, div';
+
+function normalizeNodeText(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function isVisibleNode(node) {
+  if (!node) return false;
+  if (node.hidden) return false;
+
+  const style = typeof window.getComputedStyle === 'function'
+    ? window.getComputedStyle(node)
+    : null;
+  if (style && (style.display === 'none' || style.visibility === 'hidden')) {
+    return false;
+  }
+
+  const rect = typeof node.getBoundingClientRect === 'function'
+    ? node.getBoundingClientRect()
+    : null;
+  if (rect && rect.width <= 0 && rect.height <= 0) {
+    return false;
+  }
+
+  return true;
+}
+
+function isMailItemNode(node) {
+  return Boolean(node?.closest?.(MAIL_ITEM_SELECTOR_GROUP));
+}
+
+function resolveActionTarget(node) {
+  return node?.closest?.('button, [role="button"], a, label, .el-checkbox, .el-checkbox__input') || node || null;
+}
+
+function findMailItems() {
+  for (const selector of MAIL_ITEM_SELECTORS) {
+    const items = document.querySelectorAll(selector);
+    if (items.length > 0) {
+      return Array.from(items);
+    }
+  }
+  return [];
+}
+
+function findActionBySelectors(selectors = []) {
+  for (const selector of selectors) {
+    const candidates = document.querySelectorAll(selector);
+    for (const candidate of candidates) {
+      const target = resolveActionTarget(candidate);
+      if (!isVisibleNode(target) || isMailItemNode(target)) {
+        continue;
+      }
+      return target;
+    }
+  }
+  return null;
+}
+
+function findToolbarActionButton(patterns = [], selectors = []) {
+  const directMatch = findActionBySelectors(selectors);
+  if (directMatch) {
+    return directMatch;
+  }
+
+  const candidates = document.querySelectorAll(MAIL_ACTION_CANDIDATE_SELECTORS);
+  for (const candidate of candidates) {
+    const target = resolveActionTarget(candidate);
+    if (!isVisibleNode(target) || isMailItemNode(target)) {
+      continue;
+    }
+
+    const text = normalizeNodeText(target.innerText || target.textContent || '');
+    const label = normalizeNodeText(target.getAttribute?.('aria-label') || target.getAttribute?.('title') || '');
+    if (patterns.some((pattern) => pattern.test(text) || pattern.test(label))) {
+      return target;
+    }
+  }
+
+  return null;
+}
+
+function findRefreshButton() {
+  return findToolbarActionButton([
+    /刷新/i,
+    /refresh/i,
+  ], MAIL_REFRESH_SELECTORS);
+}
+
+function findInboxLink() {
+  return findActionBySelectors(MAIL_INBOX_SELECTORS);
+}
+
+function findDeleteButton() {
+  return findToolbarActionButton([
+    /删除/i,
+    /delete/i,
+  ], MAIL_DELETE_SELECTORS);
+}
+
+function findSelectAllControl() {
+  return findActionBySelectors(MAIL_SELECT_ALL_SELECTORS);
+}
+
+function isCheckboxChecked(node) {
+  const checkbox = node?.matches?.('input[type="checkbox"], [role="checkbox"]')
+    ? node
+    : node?.querySelector?.('input[type="checkbox"], [role="checkbox"]');
+  if (checkbox?.checked === true) {
+    return true;
+  }
+  if (String(checkbox?.getAttribute?.('aria-checked') || '').toLowerCase() === 'true') {
+    return true;
+  }
+  return Boolean(
+    node?.classList?.contains('is-checked')
+    || node?.classList?.contains('checked')
+  );
+}
+
+function getMailItemText(item) {
+  if (!item) return '';
+  const contentCell = item.querySelector('td.content, .content, .mail-content');
+  const titleEl = item.querySelector('.mail-content-title');
+  const textEl = item.querySelector('.mail-content-text');
+  return [
+    titleEl?.getAttribute('title') || '',
+    titleEl?.textContent || '',
+    textEl?.textContent || '',
+    contentCell?.textContent || '',
+    item.textContent || '',
+  ].join(' ');
+}
+
+function getMailItemTimeText(item) {
+  const timeEl = item?.querySelector('.date-time-text, [class*="date-time"], [class*="time"], td.time');
+  return normalizeNodeText(timeEl?.textContent || '');
+}
+
+function normalizeMailIdentityPart(value) {
+  return normalizeNodeText(value).toLowerCase();
+}
+
+function getMailItemId(item, index = 0) {
+  const candidates = [
+    item?.getAttribute?.('data-id'),
+    item?.dataset?.id,
+    item?.getAttribute?.('data-mail-id'),
+    item?.dataset?.mailId,
+    item?.getAttribute?.('data-key'),
+    item?.getAttribute?.('key'),
+  ].filter(Boolean);
+
+  if (candidates.length > 0) {
+    return String(candidates[0]);
+  }
+
+  return [
+    index,
+    normalizeMailIdentityPart(getMailItemTimeText(item)),
+    normalizeMailIdentityPart(getMailItemText(item)).slice(0, 240),
+  ].join('|');
+}
+
+function getCurrentMailIds(items = []) {
+  const ids = new Set();
+  items.forEach((item, index) => {
+    ids.add(getMailItemId(item, index));
+  });
+  return ids;
+}
+
+function matchesMailFilters(text, senderFilters, subjectFilters) {
+  const lower = String(text || '').toLowerCase();
+  const senderMatch = senderFilters.some((filter) => lower.includes(String(filter || '').toLowerCase()));
+  const subjectMatch = subjectFilters.some((filter) => lower.includes(String(filter || '').toLowerCase()));
+  return senderMatch || subjectMatch;
+}
+
+function extractVerificationCode(text, strictChatGPTCodeOnly = false) {
+  if (strictChatGPTCodeOnly) {
+    const strictMatch = String(text || '').match(/your\s+chatgpt\s+code\s+is\s+(\d{6})/i);
+    return strictMatch ? strictMatch[1] : null;
+  }
+
+  const normalized = String(text || '');
+
+  const matchCn = normalized.match(/(?:代码为|验证码[^0-9]*?)[\s：:]*(\d{6})/);
+  if (matchCn) return matchCn[1];
+
+  const matchChatGPT = normalized.match(/your\s+chatgpt\s+code\s+is\s+(\d{6})/i);
+  if (matchChatGPT) return matchChatGPT[1];
+
+  const matchEn = normalized.match(/code[:\s]+is[:\s]+(\d{6})|code[:\s]+(\d{6})/i);
+  if (matchEn) return matchEn[1] || matchEn[2];
+
+  const match6 = normalized.match(/\b(\d{6})\b/);
+  if (match6) return match6[1];
+
+  return null;
+}
+
+function parseMailItemTimestamp(item) {
+  const timeText = getMailItemTimeText(item);
+  if (!timeText) return null;
+
+  const now = new Date();
+  const date = new Date(now);
+  let match = null;
+
+  if (/刚刚/.test(timeText)) {
+    return now.getTime();
+  }
+
+  match = timeText.match(/(\d+)\s*分钟前/);
+  if (match) {
+    return now.getTime() - Number(match[1]) * 60 * 1000;
+  }
+
+  match = timeText.match(/(\d+)\s*秒前/);
+  if (match) {
+    return now.getTime() - Number(match[1]) * 1000;
+  }
+
+  match = timeText.match(/^(\d{1,2}):(\d{2})$/);
+  if (match) {
+    date.setHours(Number(match[1]), Number(match[2]), 0, 0);
+    return date.getTime();
+  }
+
+  match = timeText.match(/今天\s*(\d{1,2}):(\d{2})/);
+  if (match) {
+    date.setHours(Number(match[1]), Number(match[2]), 0, 0);
+    return date.getTime();
+  }
+
+  match = timeText.match(/昨天\s*(\d{1,2}):(\d{2})/);
+  if (match) {
+    date.setDate(date.getDate() - 1);
+    date.setHours(Number(match[1]), Number(match[2]), 0, 0);
+    return date.getTime();
+  }
+
+  match = timeText.match(/(\d{1,2})-(\d{1,2})\s*(\d{1,2}):(\d{2})/);
+  if (match) {
+    date.setMonth(Number(match[1]) - 1, Number(match[2]));
+    date.setHours(Number(match[3]), Number(match[4]), 0, 0);
+    return date.getTime();
+  }
+
+  match = timeText.match(/(\d{4})-(\d{1,2})-(\d{1,2})\s*(\d{1,2}):(\d{2})/);
+  if (match) {
+    return new Date(
+      Number(match[1]),
+      Number(match[2]) - 1,
+      Number(match[3]),
+      Number(match[4]),
+      Number(match[5]),
+      0,
+      0
+    ).getTime();
+  }
+
+  return null;
+}
+
+async function sleepRandom(minMs, maxMs = minMs) {
+  const duration = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
+  await sleep(duration);
+}
+
+async function returnToInbox() {
+  if (findMailItems().length > 0) {
+    return true;
+  }
+
+  const inboxLink = findInboxLink();
+  if (!inboxLink) {
+    return false;
+  }
+
+  simulateClick(inboxLink);
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await sleep(250);
+    if (findMailItems().length > 0) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function openMailAndGetMessageText(item) {
+  simulateClick(item);
+  try {
+    await sleepRandom(1200, 2200);
+    return document.body?.textContent || '';
+  } finally {
+    await returnToInbox();
+  }
+}
+
+async function deleteCurrentMailboxEmail(step) {
+  try {
+    const deleteButton = findDeleteButton();
+    if (!deleteButton) {
+      return false;
+    }
+
+    simulateClick(deleteButton);
+    await sleepRandom(200, 500);
+    return true;
+  } catch (err) {
+    console.warn(MAIL2925_PREFIX, `Step ${step}: delete-current cleanup failed:`, err?.message || err);
+    return false;
+  }
+}
+
+async function openMailAndDeleteAfterRead(item, step) {
+  simulateClick(item);
+  try {
+    await sleepRandom(1200, 2200);
+    return document.body?.textContent || '';
+  } finally {
+    await deleteCurrentMailboxEmail(step);
+    await returnToInbox();
+  }
+}
+
+async function deleteAllMailboxEmails(step) {
+  try {
+    await returnToInbox();
+    const initialItems = findMailItems();
+    if (initialItems.length === 0) {
+      return true;
+    }
+
+    const selectAllControl = findSelectAllControl();
+    if (!selectAllControl) {
+      return false;
+    }
+
+    if (!isCheckboxChecked(selectAllControl)) {
+      simulateClick(selectAllControl);
+      await sleepRandom(200, 500);
+    }
+
+    const deleteButton = findDeleteButton();
+    if (!deleteButton) {
+      return false;
+    }
+
+    simulateClick(deleteButton);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await sleep(250);
+      if (findMailItems().length === 0) {
+        return true;
+      }
+    }
+
+    await sleepRandom(200, 500);
+    return findMailItems().length === 0;
+  } catch (err) {
+    console.warn(MAIL2925_PREFIX, `Step ${step}: delete-all cleanup failed:`, err?.message || err);
+    return false;
+  }
+}
+
+async function refreshInbox() {
+  const refreshBtn = findRefreshButton();
+  if (refreshBtn) {
+    simulateClick(refreshBtn);
+    await sleepRandom(700, 1200);
+    return;
+  }
+
+  const inboxLink = findInboxLink();
+  if (inboxLink) {
+    simulateClick(inboxLink);
+    await sleepRandom(700, 1200);
+  }
+}
+
+async function handlePollEmail(step, payload) {
+  await ensureSeenCodesSession(step, payload);
+  const {
+    senderFilters,
+    subjectFilters,
+    maxAttempts,
+    intervalMs,
+    excludeCodes = [],
+    strictChatGPTCodeOnly = false,
+  } = payload || {};
+  const excludedCodeSet = new Set(excludeCodes.filter(Boolean));
+
+  log(`步骤 ${step}：开始轮询 2925 邮箱（最多 ${maxAttempts} 次）`);
+
+  let initialItems = [];
+  let initialLoadUsedRefresh = false;
+
+  for (let i = 0; i < 20; i += 1) {
+    initialItems = findMailItems();
+    if (initialItems.length > 0) {
+      break;
+    }
+    await sleep(500);
+  }
+
+  if (initialItems.length === 0) {
+    initialLoadUsedRefresh = true;
+    await returnToInbox();
+    await refreshInbox();
+    await sleep(2000);
+    initialItems = findMailItems();
+  }
+
+  if (initialItems.length === 0) {
+    throw new Error('2925 邮箱列表未加载完成，请确认当前已打开收件箱。');
+  }
+
+  log(`步骤 ${step}：邮件列表已加载，共 ${initialItems.length} 封邮件`);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    log(`步骤 ${step}：正在轮询 2925 邮箱，第 ${attempt}/${maxAttempts} 次`);
+
+    if (attempt > 1 || !initialLoadUsedRefresh) {
+      await returnToInbox();
+      await refreshInbox();
+      await sleepRandom(900, 1500);
+    }
+
+    const items = findMailItems();
+    if (items.length > 0) {
+      for (let index = 0; index < items.length; index += 1) {
+        const item = items[index];
+        const itemTimestamp = parseMailItemTimestamp(item);
+
+        const previewText = getMailItemText(item);
+        if (!matchesMailFilters(previewText, senderFilters, subjectFilters)) {
+          continue;
+        }
+
+        const previewCode = extractVerificationCode(previewText, strictChatGPTCodeOnly);
+        const openedText = await openMailAndDeleteAfterRead(item, step);
+        const bodyCode = extractVerificationCode(openedText, strictChatGPTCodeOnly);
+        const candidateCode = bodyCode || previewCode;
+
+        if (!candidateCode) {
+          continue;
+        }
+
+        if (excludedCodeSet.has(candidateCode)) {
+          log(`步骤 ${step}：跳过排除的验证码：${candidateCode}`, 'info');
+          continue;
+        }
+        if (seenCodes.has(candidateCode)) {
+          log(`步骤 ${step}：跳过已处理过的验证码：${candidateCode}`, 'info');
+          continue;
+        }
+
+        seenCodes.add(candidateCode);
+        persistSeenCodes();
+        const source = bodyCode ? '邮件正文' : '邮件预览';
+        const timeLabel = itemTimestamp ? `，时间：${new Date(itemTimestamp).toLocaleString('zh-CN', { hour12: false })}` : '';
+        log(`步骤 ${step}：已找到验证码：${candidateCode}（来源：${source}${timeLabel}）`, 'ok');
+        return { ok: true, code: candidateCode, emailTimestamp: Date.now() };
+      }
+    }
+
+    if (attempt < maxAttempts) {
+      await sleepRandom(intervalMs, intervalMs + 1200);
+    }
+  }
+
+  throw new Error(
+    `${(maxAttempts * intervalMs / 1000).toFixed(0)} 秒后仍未在 2925 邮箱中找到新的匹配邮件。请手动检查收件箱。`
+  );
+}
+
+}

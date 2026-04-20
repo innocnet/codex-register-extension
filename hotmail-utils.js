@@ -6,22 +6,9 @@
 
   root.HotmailUtils = factory();
 })(typeof self !== 'undefined' ? self : globalThis, function createHotmailUtils() {
-  const HOTMAIL_MICROSOFT_TOKEN_URL = 'https://login.microsoftonline.com/consumers/oauth2/v2.0/token';
-  const HOTMAIL_GRAPH_API_ORIGIN = 'https://graph.microsoft.com';
-  const HOTMAIL_GRAPH_PAGE_SIZE = 10;
-  const HOTMAIL_GRAPH_MESSAGE_FIELDS = [
-    'id',
-    'internetMessageId',
-    'subject',
-    'from',
-    'bodyPreview',
-    'receivedDateTime',
-  ];
-  const HOTMAIL_GRAPH_SCOPES = [
-    'offline_access',
-    'https://graph.microsoft.com/Mail.Read',
-    'https://graph.microsoft.com/User.Read',
-  ];
+  const HOTMAIL_MAIL_API_URL = 'https://apple.882263.xyz/api/mail-new';
+  const HOTMAIL_SERVICE_MODE_REMOTE = 'remote';
+  const HOTMAIL_SERVICE_MODE_LOCAL = 'local';
 
   function normalizeText(value) {
     return String(value || '')
@@ -39,6 +26,13 @@
     const timestamp = Date.parse(value);
     return Number.isFinite(timestamp) ? timestamp : 0;
   }
+
+  function normalizeHotmailServiceMode(rawValue = '') {
+    return String(rawValue || '').trim().toLowerCase() === HOTMAIL_SERVICE_MODE_REMOTE
+      ? HOTMAIL_SERVICE_MODE_REMOTE
+      : HOTMAIL_SERVICE_MODE_LOCAL;
+  }
+
 
   function extractVerificationCode(text) {
     const source = String(text || '');
@@ -291,20 +285,19 @@
     return list.map((message) => normalizeHotmailMailApiMessage(message));
   }
 
-  function normalizeHotmailMailboxId(mailbox = 'INBOX') {
-    const normalized = normalizeText(mailbox);
-    if (normalized === 'junk' || normalized === 'junk email' || normalized === 'junkemail') {
-      return 'junkemail';
+  function buildHotmailMailApiLatestUrl(options) {
+    const apiUrl = String(options?.apiUrl || '').trim() || HOTMAIL_MAIL_API_URL;
+    const url = new URL(apiUrl);
+    url.searchParams.set('refresh_token', String(options?.refreshToken || ''));
+    url.searchParams.set('client_id', String(options?.clientId || ''));
+    url.searchParams.set('email', String(options?.email || ''));
+    url.searchParams.set('mailbox', String(options?.mailbox || 'INBOX'));
+    const responseType = options?.responseType === undefined || options?.responseType === null
+      ? 'json'
+      : String(options.responseType).trim();
+    if (responseType) {
+      url.searchParams.set('response_type', responseType);
     }
-    return 'inbox';
-  }
-
-  function buildHotmailGraphMessagesUrl(options) {
-    const folderId = normalizeHotmailMailboxId(options?.mailbox);
-    const url = new URL(`${HOTMAIL_GRAPH_API_ORIGIN}/v1.0/me/mailFolders/${folderId}/messages`);
-    url.searchParams.set('$top', String(options?.top || HOTMAIL_GRAPH_PAGE_SIZE));
-    url.searchParams.set('$select', (options?.selectFields || HOTMAIL_GRAPH_MESSAGE_FIELDS).join(','));
-    url.searchParams.set('$orderby', String(options?.orderBy || 'receivedDateTime desc'));
     return url.toString();
   }
 
@@ -348,13 +341,9 @@
       : (flowStartTime || 0);
   }
 
-  function getHotmailGraphRequestConfig() {
+  function getHotmailMailApiRequestConfig() {
     return {
       timeoutMs: 15000,
-      pageSize: HOTMAIL_GRAPH_PAGE_SIZE,
-      scopes: HOTMAIL_GRAPH_SCOPES.slice(),
-      tokenUrl: HOTMAIL_MICROSOFT_TOKEN_URL,
-      messageFields: HOTMAIL_GRAPH_MESSAGE_FIELDS.slice(),
     };
   }
 
@@ -377,18 +366,18 @@
   }
 
   return {
-    buildHotmailGraphMessagesUrl,
+    buildHotmailMailApiLatestUrl,
     extractVerificationCodeFromMessage,
     filterHotmailAccountsByUsage,
     extractVerificationCode,
     getLatestHotmailMessage,
     getHotmailBulkActionLabel,
     getHotmailListToggleLabel,
-    getHotmailGraphRequestConfig,
+    getHotmailMailApiRequestConfig,
     getHotmailVerificationPollConfig,
     getHotmailVerificationRequestTimestamp,
-    normalizeHotmailMailboxId,
     isAuthorizedHotmailAccount,
+    normalizeHotmailServiceMode,
     normalizeHotmailMailApiMessages,
     normalizeTimestamp,
     parseHotmailImportText,
