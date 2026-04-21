@@ -91,6 +91,67 @@ if (isTopFrame) {
     return null;
   }
 
+  function parseMailTimestampText(value) {
+    const text = normalizeText(value);
+    if (!text) return null;
+
+    const now = new Date();
+    let match = null;
+
+    if (/刚刚/.test(text)) {
+      return now.getTime();
+    }
+
+    match = text.match(/(\d+)\s*分钟前/);
+    if (match) {
+      return now.getTime() - Number(match[1]) * 60 * 1000;
+    }
+
+    match = text.match(/(\d+)\s*秒前/);
+    if (match) {
+      return now.getTime() - Number(match[1]) * 1000;
+    }
+
+    match = text.match(/(上午|下午)?\s*(\d{1,2}):(\d{2})/);
+    if (match) {
+      const date = new Date(now);
+      let hour = Number(match[2]);
+      const minute = Number(match[3]);
+      if (match[1] === '下午' && hour < 12) hour += 12;
+      if (match[1] === '上午' && hour === 12) hour = 0;
+      date.setHours(hour, minute, 0, 0);
+      return date.getTime();
+    }
+
+    match = text.match(/(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?/);
+    if (match) {
+      return new Date(
+        Number(match[1]),
+        Number(match[2]) - 1,
+        Number(match[3]),
+        Number(match[4] || 0),
+        Number(match[5] || 0),
+        0,
+        0
+      ).getTime();
+    }
+
+    match = text.match(/(\d{1,2})[-/.](\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?/);
+    if (match) {
+      return new Date(
+        now.getFullYear(),
+        Number(match[1]) - 1,
+        Number(match[2]),
+        Number(match[3] || 0),
+        Number(match[4] || 0),
+        0,
+        0
+      ).getTime();
+    }
+
+    return null;
+  }
+
   function readOpenedMailHeader() {
     const headerRoot = document.querySelector('.ic-efwqa7');
     if (!headerRoot) {
@@ -219,11 +280,13 @@ if (isTopFrame) {
   }
 
   async function handlePollEmail(step, payload) {
-    const { senderFilters, subjectFilters, maxAttempts, intervalMs, excludeCodes = [] } = payload;
+    const { senderFilters, subjectFilters, maxAttempts, intervalMs, filterAfterTimestamp = 0, excludeCodes = [] } = payload;
     const excludedCodeSet = new Set(excludeCodes.filter(Boolean));
     const FALLBACK_AFTER = 3;
     const normalizedSenderFilters = senderFilters.map((filter) => String(filter || '').toLowerCase()).filter(Boolean);
     const normalizedSubjectFilters = subjectFilters.map((filter) => String(filter || '').toLowerCase()).filter(Boolean);
+    const filterTimestamp = Number(filterAfterTimestamp) || 0;
+    const filterToleranceMs = filterTimestamp > 0 ? 60 * 1000 : 0;
 
     log(`步骤 ${step}：开始轮询 iCloud 邮箱（最多 ${maxAttempts} 次）`);
     await waitForElement('.content-container', 10000);
@@ -245,11 +308,21 @@ if (isTopFrame) {
 
       for (const item of items) {
         const signature = buildItemSignature(item);
-        if (!useFallback && existingSignatures.has(signature)) {
+        const isInitialMail = existingSignatures.has(signature);
+        if (!useFallback && isInitialMail) {
           continue;
         }
 
         const meta = getThreadItemMetadata(item);
+        let effectiveTimestamp = parseMailTimestampText(meta.timestamp);
+        const passesTimeFilter = !filterTimestamp
+          || (Number.isFinite(effectiveTimestamp) && effectiveTimestamp >= (filterTimestamp - filterToleranceMs));
+        const canFallbackToSnapshotFreshness = !filterTimestamp || !isInitialMail;
+
+        if (!passesTimeFilter && !canFallbackToSnapshotFreshness) {
+          continue;
+        }
+
         const lowerSender = meta.sender.toLowerCase();
         const lowerSubject = normalizeText([meta.subject, meta.preview].join(' ')).toLowerCase();
         const senderMatch = normalizedSenderFilters.some((filter) => lowerSender.includes(filter));
@@ -272,6 +345,7 @@ if (isTopFrame) {
             continue;
           }
           code = extractVerificationCode(opened.combinedText);
+          effectiveTimestamp = parseMailTimestampText(opened.timestamp) || effectiveTimestamp;
         }
 
         if (!code) {
@@ -281,13 +355,16 @@ if (isTopFrame) {
           log(`步骤 ${step}：跳过排除的验证码：${code}`, 'info');
           continue;
         }
+        if (!passesTimeFilter && filterTimestamp && isInitialMail) {
+          continue;
+        }
 
-        const source = useFallback && existingSignatures.has(signature) ? '回退匹配邮件' : '新邮件';
+        const source = useFallback && isInitialMail ? '回退匹配邮件' : '新邮件';
         log(`步骤 ${step}：已找到验证码：${code}（来源：${source}）`, 'ok');
         return {
           ok: true,
           code,
-          emailTimestamp: Date.now(),
+          emailTimestamp: Number.isFinite(effectiveTimestamp) ? effectiveTimestamp : Date.now(),
           preview: (opened?.combinedText || meta.combinedText).slice(0, 160),
         };
       }

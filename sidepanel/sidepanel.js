@@ -186,6 +186,10 @@ const inputAutoDelayEnabled = document.getElementById('input-auto-delay-enabled'
 const inputAutoDelayMinutes = document.getElementById('input-auto-delay-minutes');
 const inputAutoStepDelaySeconds = document.getElementById('input-auto-step-delay-seconds');
 const inputVerificationResendCount = document.getElementById('input-verification-resend-count');
+const inputSignupVerificationPollIntervalSeconds = document.getElementById('input-signup-verification-poll-interval-ms');
+const inputSignupVerificationPollMaxAttempts = document.getElementById('input-signup-verification-poll-max-attempts');
+const inputLoginVerificationPollIntervalSeconds = document.getElementById('input-login-verification-poll-interval-ms');
+const inputLoginVerificationPollMaxAttempts = document.getElementById('input-login-verification-poll-max-attempts');
 const rowAccountRunHistoryTextEnabled = document.getElementById('row-account-run-history-text-enabled');
 const inputAccountRunHistoryTextEnabled = document.getElementById('input-account-run-history-text-enabled');
 const rowAccountRunHistoryHelperBaseUrl = document.getElementById('row-account-run-history-helper-base-url');
@@ -219,6 +223,10 @@ const AUTO_STEP_DELAY_MAX_SECONDS = 600;
 const VERIFICATION_RESEND_COUNT_MIN = 0;
 const VERIFICATION_RESEND_COUNT_MAX = 20;
 const DEFAULT_VERIFICATION_RESEND_COUNT = 4;
+const VERIFICATION_POLL_INTERVAL_MIN_MS = 1000;
+const VERIFICATION_POLL_INTERVAL_MAX_MS = 60000;
+const VERIFICATION_POLL_MAX_ATTEMPTS_MIN = 1;
+const VERIFICATION_POLL_MAX_ATTEMPTS_MAX = 60;
 const DEFAULT_LOCAL_CPA_STEP9_MODE = 'submit';
 const DEFAULT_CPA_CALLBACK_MODE = 'step8';
 const MAIL_2925_MODE_PROVIDE = 'provide';
@@ -1044,6 +1052,64 @@ function normalizeVerificationResendCount(value, fallback) {
   );
 }
 
+function normalizeVerificationPollIntervalMs(value, fallback = null) {
+  const rawValue = String(value ?? '').trim();
+  if (!rawValue) {
+    return fallback;
+  }
+
+  const numeric = Number(rawValue);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+
+  return Math.min(
+    VERIFICATION_POLL_INTERVAL_MAX_MS,
+    Math.max(VERIFICATION_POLL_INTERVAL_MIN_MS, Math.floor(numeric))
+  );
+}
+
+function normalizeVerificationPollIntervalMsFromSeconds(value, fallback = null) {
+  const rawValue = String(value ?? '').trim();
+  if (!rawValue) {
+    return fallback;
+  }
+
+  const numeric = Number(rawValue);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+
+  return normalizeVerificationPollIntervalMs(numeric * 1000, fallback);
+}
+
+function normalizeVerificationPollMaxAttempts(value, fallback = null) {
+  const rawValue = String(value ?? '').trim();
+  if (!rawValue) {
+    return fallback;
+  }
+
+  const numeric = Number(rawValue);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+
+  return Math.min(
+    VERIFICATION_POLL_MAX_ATTEMPTS_MAX,
+    Math.max(VERIFICATION_POLL_MAX_ATTEMPTS_MIN, Math.floor(numeric))
+  );
+}
+
+function formatVerificationPollInputValue(value, fallback = null, normalizer = normalizeVerificationPollIntervalMs) {
+  const normalized = normalizer(value, fallback);
+  return normalized === null ? '' : String(normalized);
+}
+
+function formatVerificationPollIntervalSecondsInputValue(value, fallback = null) {
+  const normalized = normalizeVerificationPollIntervalMs(value, fallback);
+  return normalized === null ? '' : String(normalized / 1000);
+}
+
 function formatAutoStepDelayInputValue(value) {
   const normalized = normalizeAutoStepDelaySeconds(value);
   return normalized === null ? '' : String(normalized);
@@ -1390,6 +1456,22 @@ function collectSettingsPayload() {
     verificationResendCount: normalizeVerificationResendCount(
       inputVerificationResendCount?.value,
       DEFAULT_VERIFICATION_RESEND_COUNT
+    ),
+    signupVerificationPollIntervalMs: normalizeVerificationPollIntervalMsFromSeconds(
+      inputSignupVerificationPollIntervalSeconds?.value,
+      null
+    ),
+    signupVerificationPollMaxAttempts: normalizeVerificationPollMaxAttempts(
+      inputSignupVerificationPollMaxAttempts?.value,
+      null
+    ),
+    loginVerificationPollIntervalMs: normalizeVerificationPollIntervalMsFromSeconds(
+      inputLoginVerificationPollIntervalSeconds?.value,
+      null
+    ),
+    loginVerificationPollMaxAttempts: normalizeVerificationPollMaxAttempts(
+      inputLoginVerificationPollMaxAttempts?.value,
+      null
     ),
   };
 }
@@ -1800,6 +1882,32 @@ function applySettingsState(state) {
       : (state?.signupVerificationResendCount ?? state?.loginVerificationResendCount);
     inputVerificationResendCount.value = String(
       normalizeVerificationResendCount(restoredVerificationResendCount, DEFAULT_VERIFICATION_RESEND_COUNT)
+    );
+  }
+  if (inputSignupVerificationPollIntervalSeconds) {
+    inputSignupVerificationPollIntervalSeconds.value = formatVerificationPollIntervalSecondsInputValue(
+      state?.signupVerificationPollIntervalMs,
+      null
+    );
+  }
+  if (inputSignupVerificationPollMaxAttempts) {
+    inputSignupVerificationPollMaxAttempts.value = formatVerificationPollInputValue(
+      state?.signupVerificationPollMaxAttempts,
+      null,
+      normalizeVerificationPollMaxAttempts
+    );
+  }
+  if (inputLoginVerificationPollIntervalSeconds) {
+    inputLoginVerificationPollIntervalSeconds.value = formatVerificationPollIntervalSecondsInputValue(
+      state?.loginVerificationPollIntervalMs,
+      null
+    );
+  }
+  if (inputLoginVerificationPollMaxAttempts) {
+    inputLoginVerificationPollMaxAttempts.value = formatVerificationPollInputValue(
+      state?.loginVerificationPollMaxAttempts,
+      null,
+      normalizeVerificationPollMaxAttempts
     );
   }
   if (state?.autoRunTotalRuns) {
@@ -3273,7 +3381,28 @@ stepsList?.addEventListener('click', async (event) => {
     if (!(await maybeTakeoverAutoRun(`执行步骤 ${step}`))) {
       return;
     }
-    if (step === 3) {
+    if (step === 2) {
+      const email = inputEmail.value.trim();
+      if (email) {
+        if (!validateCurrentRegistrationEmail(email, { showToastOnFailure: true })) {
+          return;
+        }
+        const response = await chrome.runtime.sendMessage({ type: 'EXECUTE_STEP', source: 'sidepanel', payload: { step, email } });
+        if (response?.error) {
+          throw new Error(response.error);
+        }
+      } else {
+        const payload = { step };
+        if (usesGeneratedAliasMailProvider(selectMailProvider.value)) {
+          await saveSettings({ silent: true });
+          Object.assign(payload, buildManagedAliasBaseEmailPayload());
+        }
+        const response = await chrome.runtime.sendMessage({ type: 'EXECUTE_STEP', source: 'sidepanel', payload });
+        if (response?.error) {
+          throw new Error(response.error);
+        }
+      }
+    } else if (step === 3) {
       if (inputPassword.value !== (latestState?.customPassword || '')) {
         await chrome.runtime.sendMessage({
           type: 'SAVE_SETTING',

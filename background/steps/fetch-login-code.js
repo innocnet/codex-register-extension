@@ -131,7 +131,7 @@
         ...state,
         step8VerificationTargetEmail: displayedVerificationEmail || '',
       }, mail, {
-        filterAfterTimestamp: mail.provider === '2925' ? 0 : stepStartedAt,
+        filterAfterTimestamp: stepStartedAt,
         sessionKey: verificationSessionKey,
         disableTimeBudgetCap: mail.provider === '2925',
         getRemainingTimeMs: getStep8RemainingTimeResolver(state?.oauthUrl || ''),

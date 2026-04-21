@@ -53,6 +53,8 @@ test('background account history settings are normalized independently from hotm
     extractFunction('normalizeHotmailLocalBaseUrl'),
     extractFunction('normalizeAccountRunHistoryHelperBaseUrl'),
     extractFunction('normalizeVerificationResendCount'),
+    extractFunction('normalizeVerificationPollIntervalMs'),
+    extractFunction('normalizeVerificationPollMaxAttempts'),
     extractFunction('normalizePersistentSettingValue'),
   ].join('\n');
 
@@ -66,8 +68,16 @@ const HOTMAIL_SERVICE_MODE_REMOTE = 'remote';
 const HOTMAIL_SERVICE_MODE_LOCAL = 'local';
 const VERIFICATION_RESEND_COUNT_MIN = 0;
 const VERIFICATION_RESEND_COUNT_MAX = 20;
+const VERIFICATION_POLL_INTERVAL_MIN_MS = 1000;
+const VERIFICATION_POLL_INTERVAL_MAX_MS = 60000;
+const VERIFICATION_POLL_MAX_ATTEMPTS_MIN = 1;
+const VERIFICATION_POLL_MAX_ATTEMPTS_MAX = 60;
 const PERSISTED_SETTING_DEFAULTS = {
   autoStepDelaySeconds: null,
+  signupVerificationPollIntervalMs: 20000,
+  signupVerificationPollMaxAttempts: 6,
+  loginVerificationPollIntervalMs: 20000,
+  loginVerificationPollMaxAttempts: 6,
   mailProvider: '163',
 };
 function normalizePanelMode(value) { return value === 'sub2api' ? 'sub2api' : 'cpa'; }
@@ -98,6 +108,14 @@ return {
   assert.equal(api.normalizePersistentSettingValue('accountRunHistoryTextEnabled', 1), true);
   assert.equal(api.normalizePersistentSettingValue('verificationResendCount', '7'), 7);
   assert.equal(api.normalizePersistentSettingValue('verificationResendCount', '-1'), 0);
+  assert.equal(api.normalizePersistentSettingValue('signupVerificationPollIntervalMs', '9000'), 9000);
+  assert.equal(api.normalizePersistentSettingValue('signupVerificationPollMaxAttempts', '12'), 12);
+  assert.equal(api.normalizePersistentSettingValue('loginVerificationPollIntervalMs', '11000'), 11000);
+  assert.equal(api.normalizePersistentSettingValue('loginVerificationPollMaxAttempts', '9'), 9);
+  assert.equal(api.normalizePersistentSettingValue('signupVerificationPollIntervalMs', ''), 20000);
+  assert.equal(api.normalizePersistentSettingValue('signupVerificationPollMaxAttempts', ''), 6);
+  assert.equal(api.normalizePersistentSettingValue('loginVerificationPollIntervalMs', ''), 20000);
+  assert.equal(api.normalizePersistentSettingValue('loginVerificationPollMaxAttempts', ''), 6);
   assert.equal(
     api.normalizePersistentSettingValue('accountRunHistoryHelperBaseUrl', 'http://127.0.0.1:17373/append-account-log'),
     'http://127.0.0.1:17373'

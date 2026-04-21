@@ -50,13 +50,72 @@ function getCurrentMailIds() {
   return ids;
 }
 
+function parseMailTimestampText(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+
+  const now = new Date();
+  let match = null;
+
+  if (/刚刚/.test(text)) {
+    return now.getTime();
+  }
+
+  match = text.match(/(\d+)\s*分钟前/);
+  if (match) {
+    return now.getTime() - Number(match[1]) * 60 * 1000;
+  }
+
+  match = text.match(/(\d+)\s*秒前/);
+  if (match) {
+    return now.getTime() - Number(match[1]) * 1000;
+  }
+
+  match = text.match(/^(\d{1,2}):(\d{2})$/);
+  if (match) {
+    const date = new Date(now);
+    date.setHours(Number(match[1]), Number(match[2]), 0, 0);
+    return date.getTime();
+  }
+
+  match = text.match(/(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?/);
+  if (match) {
+    return new Date(
+      Number(match[1]),
+      Number(match[2]) - 1,
+      Number(match[3]),
+      Number(match[4] || 0),
+      Number(match[5] || 0),
+      0,
+      0
+    ).getTime();
+  }
+
+  match = text.match(/(\d{1,2})[-/.](\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?/);
+  if (match) {
+    return new Date(
+      now.getFullYear(),
+      Number(match[1]) - 1,
+      Number(match[2]),
+      Number(match[3] || 0),
+      Number(match[4] || 0),
+      0,
+      0
+    ).getTime();
+  }
+
+  return null;
+}
+
 // ============================================================
 // Email Polling
 // ============================================================
 
 async function handlePollEmail(step, payload) {
-  const { senderFilters, subjectFilters, maxAttempts, intervalMs, excludeCodes = [] } = payload;
+  const { senderFilters, subjectFilters, maxAttempts, intervalMs, filterAfterTimestamp = 0, excludeCodes = [] } = payload;
   const excludedCodeSet = new Set(excludeCodes.filter(Boolean));
+  const filterTimestamp = Number(filterAfterTimestamp) || 0;
+  const filterToleranceMs = filterTimestamp > 0 ? 60 * 1000 : 0;
 
   log(`步骤 ${step}：开始轮询邮箱（最多 ${maxAttempts} 次，每 ${intervalMs / 1000} 秒一次）`);
 
@@ -92,12 +151,21 @@ async function handlePollEmail(step, payload) {
     // Phase 2 (attempt 4+): fallback to first matching email in list
     for (const item of allItems) {
       const mailId = item.getAttribute('data-mailid');
-
-      if (!useFallback && existingMailIds.has(mailId)) continue;
+      const isInitialMail = existingMailIds.has(mailId);
+      if (!useFallback && isInitialMail) continue;
 
       const sender = (item.querySelector('.cmp-account-nick')?.textContent || '').toLowerCase();
       const subject = (item.querySelector('.mail-subject')?.textContent || '').toLowerCase();
       const digest = item.querySelector('.mail-digest')?.textContent || '';
+      const timestampText = item.querySelector('.mail-time')?.textContent
+        || item.querySelector('.mail-date')?.textContent
+        || '';
+      const itemTimestamp = parseMailTimestampText(timestampText);
+      const passesTimeFilter = !filterTimestamp
+        || (Number.isFinite(itemTimestamp) && itemTimestamp >= (filterTimestamp - filterToleranceMs));
+      const canFallbackToSnapshotFreshness = !filterTimestamp || !isInitialMail;
+
+      if (!passesTimeFilter && !canFallbackToSnapshotFreshness) continue;
 
       const senderMatch = senderFilters.some(f => sender.includes(f.toLowerCase()));
       const subjectMatch = subjectFilters.some(f => subject.includes(f.toLowerCase()));
@@ -109,9 +177,12 @@ async function handlePollEmail(step, payload) {
             log(`步骤 ${step}：跳过排除的验证码：${code}`, 'info');
             continue;
           }
-          const source = useFallback && existingMailIds.has(mailId) ? '回退首封匹配邮件' : '新邮件';
+          if (!passesTimeFilter && filterTimestamp && isInitialMail) {
+            continue;
+          }
+          const source = useFallback && isInitialMail ? '回退首封匹配邮件' : '新邮件';
           log(`步骤 ${step}：已找到验证码：${code}（来源：${source}，主题：${subject.slice(0, 40)}）`, 'ok');
-          return { ok: true, code, emailTimestamp: Date.now(), mailId };
+          return { ok: true, code, emailTimestamp: Number.isFinite(itemTimestamp) ? itemTimestamp : Date.now(), mailId };
         }
       }
     }

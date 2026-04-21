@@ -539,10 +539,13 @@ async function handlePollEmail(step, payload) {
     subjectFilters,
     maxAttempts,
     intervalMs,
+    filterAfterTimestamp = 0,
     excludeCodes = [],
     strictChatGPTCodeOnly = false,
   } = payload || {};
   const excludedCodeSet = new Set(excludeCodes.filter(Boolean));
+  const filterTimestamp = Number(filterAfterTimestamp) || 0;
+  const filterToleranceMs = filterTimestamp > 0 ? 60 * 1000 : 0;
 
   log(`步骤 ${step}：开始轮询 2925 邮箱（最多 ${maxAttempts} 次）`);
 
@@ -569,6 +572,7 @@ async function handlePollEmail(step, payload) {
     throw new Error('2925 邮箱列表未加载完成，请确认当前已打开收件箱。');
   }
 
+  const initialMailIds = getCurrentMailIds(initialItems);
   log(`步骤 ${step}：邮件列表已加载，共 ${initialItems.length} 封邮件`);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -585,6 +589,15 @@ async function handlePollEmail(step, payload) {
       for (let index = 0; index < items.length; index += 1) {
         const item = items[index];
         const itemTimestamp = parseMailItemTimestamp(item);
+        const itemId = getMailItemId(item, index);
+        const isInitialMail = initialMailIds.has(itemId);
+        const passesTimeFilter = !filterTimestamp
+          || (Number.isFinite(itemTimestamp) && itemTimestamp >= (filterTimestamp - filterToleranceMs));
+        const canFallbackToSnapshotFreshness = !filterTimestamp || !isInitialMail;
+
+        if (!passesTimeFilter && !canFallbackToSnapshotFreshness) {
+          continue;
+        }
 
         const previewText = getMailItemText(item);
         if (!matchesMailFilters(previewText, senderFilters, subjectFilters)) {
@@ -608,13 +621,17 @@ async function handlePollEmail(step, payload) {
           log(`步骤 ${step}：跳过已处理过的验证码：${candidateCode}`, 'info');
           continue;
         }
+        if (!passesTimeFilter && filterTimestamp && isInitialMail) {
+          continue;
+        }
 
         seenCodes.add(candidateCode);
         persistSeenCodes();
         const source = bodyCode ? '邮件正文' : '邮件预览';
+        const effectiveTimestamp = Number.isFinite(itemTimestamp) ? itemTimestamp : Date.now();
         const timeLabel = itemTimestamp ? `，时间：${new Date(itemTimestamp).toLocaleString('zh-CN', { hour12: false })}` : '';
         log(`步骤 ${step}：已找到验证码：${candidateCode}（来源：${source}${timeLabel}）`, 'ok');
-        return { ok: true, code: candidateCode, emailTimestamp: Date.now() };
+        return { ok: true, code: candidateCode, emailTimestamp: effectiveTimestamp };
       }
     }
 

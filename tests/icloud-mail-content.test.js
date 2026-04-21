@@ -179,3 +179,86 @@ return {
   assert.equal(api.isThreadItemSelected(staleItem, api.buildItemSignature(selectedItem)), true);
   assert.equal(api.isThreadItemSelected(staleItem, api.buildItemSignature(staleItem)), false);
 });
+
+test('handlePollEmail skips old iCloud verification mail before filterAfterTimestamp and returns parsed mail timestamp', async () => {
+  const bundle = [
+    extractFunction('normalizeText'),
+    extractFunction('handlePollEmail'),
+  ].join('\n');
+
+  const filterAfterTimestamp = 1700000000000;
+  const expectedEmailTimestamp = 1700000029000;
+
+  const api = new Function(`
+let state = 'baseline';
+let refreshCalls = 0;
+
+const oldItem = { id: 'old' };
+const newItem = { id: 'new' };
+
+function collectThreadItems() {
+  return state === 'baseline' ? [oldItem] : [oldItem, newItem];
+}
+
+function buildItemSignature(item) {
+  return item.id;
+}
+
+function getThreadItemMetadata(item) {
+  if (item === oldItem) {
+    return {
+      sender: 'OpenAI',
+      subject: 'OpenAI verification 111111',
+      preview: 'Code 111111',
+      timestamp: 'old-ts',
+      combinedText: 'OpenAI OpenAI verification 111111 Code 111111 old-ts',
+    };
+  }
+  return {
+    sender: 'OpenAI',
+    subject: 'OpenAI verification 222222',
+    preview: 'Code 222222',
+    timestamp: 'new-ts',
+    combinedText: 'OpenAI OpenAI verification 222222 Code 222222 new-ts',
+  };
+}
+
+function extractVerificationCode(text) {
+  const match = String(text || '').match(/(\\d{6})/);
+  return match ? match[1] : null;
+}
+
+function parseMailTimestampText(value) {
+  return value === 'old-ts' ? 1699999800000 : 1700000029000;
+}
+
+async function waitForElement() {}
+async function sleep() {}
+async function refreshInbox() {
+  refreshCalls += 1;
+  if (refreshCalls >= 3) {
+    state = 'with-new';
+  }
+}
+async function openMailItemAndRead() {
+  throw new Error('unexpected open');
+}
+function log() {}
+
+${bundle}
+
+return { handlePollEmail };
+`)();
+
+  const result = await api.handlePollEmail(4, {
+    senderFilters: ['openai'],
+    subjectFilters: ['verification'],
+    filterAfterTimestamp,
+    maxAttempts: 4,
+    intervalMs: 1,
+  });
+
+  assert.equal(result.code, '222222');
+  assert.equal(result.emailTimestamp, expectedEmailTimestamp);
+  assert.match(result.preview, /222222/);
+});

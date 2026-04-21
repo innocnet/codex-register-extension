@@ -336,12 +336,44 @@
       </div>
       <div class="data-row" id="row-verification-resend-count">
         <span class="data-label">验证码</span>
-        <div class="data-inline">
+        <div class="data-inline" style="flex-wrap: wrap; gap: 8px 12px;">
           <div class="timing-field timing-field-labeled timing-field-right setting-inline-right">
             <span class="auto-delay-caption">验证码重发</span>
             <div class="auto-delay-controls">
               <input type="number" id="input-verification-resend-count" class="data-input auto-delay-input" value="4"
                 min="0" max="20" step="1" title="自动点击重新发送验证码的次数" />
+              <span class="data-unit">次</span>
+            </div>
+          </div>
+          <div class="timing-field timing-field-labeled timing-field-right setting-inline-right">
+            <span class="auto-delay-caption">注册轮询间隔</span>
+            <div class="auto-delay-controls">
+              <input type="number" id="input-signup-verification-poll-interval-ms" class="data-input auto-delay-input"
+                min="1" max="60" step="1" title="步骤 4 查询注册验证码的轮询间隔（秒）" />
+              <span class="data-unit">秒</span>
+            </div>
+          </div>
+          <div class="timing-field timing-field-labeled timing-field-right setting-inline-right">
+            <span class="auto-delay-caption">注册轮询次数</span>
+            <div class="auto-delay-controls">
+              <input type="number" id="input-signup-verification-poll-max-attempts" class="data-input auto-delay-input"
+                min="1" max="60" step="1" title="步骤 4 查询注册验证码的最大轮询次数" />
+              <span class="data-unit">次</span>
+            </div>
+          </div>
+          <div class="timing-field timing-field-labeled timing-field-right setting-inline-right">
+            <span class="auto-delay-caption">登录轮询间隔</span>
+            <div class="auto-delay-controls">
+              <input type="number" id="input-login-verification-poll-interval-ms" class="data-input auto-delay-input"
+                min="1" max="60" step="1" title="步骤 8 查询登录验证码的轮询间隔（秒）" />
+              <span class="data-unit">秒</span>
+            </div>
+          </div>
+          <div class="timing-field timing-field-labeled timing-field-right setting-inline-right">
+            <span class="auto-delay-caption">登录轮询次数</span>
+            <div class="auto-delay-controls">
+              <input type="number" id="input-login-verification-poll-max-attempts" class="data-input auto-delay-input"
+                min="1" max="60" step="1" title="步骤 8 查询登录验证码的最大轮询次数" />
               <span class="data-unit">次</span>
             </div>
           </div>

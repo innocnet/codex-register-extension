@@ -290,6 +290,86 @@ return {
   ]);
 });
 
+test('handlePollEmail skips old 2925 verification mail before filterAfterTimestamp and returns the real mail timestamp', async () => {
+  const bundle = extractFunction('handlePollEmail');
+
+  const filterAfterTimestamp = 1700000000000;
+  const expectedEmailTimestamp = 1700000029000;
+
+  const api = new Function(`
+const seenCodes = new Set();
+const readAndDeleteCalls = [];
+const oldMail = { id: 'old', text: 'OpenAI verification code 111111' };
+const newMail = { id: 'new', text: 'OpenAI verification code 222222' };
+
+function findMailItems() {
+  return [oldMail, newMail];
+}
+
+function getMailItemId(item) {
+  return item.id;
+}
+
+function getCurrentMailIds(items = []) {
+  return new Set(items.map((item) => item.id));
+}
+
+function parseMailItemTimestamp(item) {
+  return item.id === 'old' ? 1699999800000 : 1700000029000;
+}
+
+function matchesMailFilters(text) {
+  return /openai|verification/i.test(String(text || ''));
+}
+
+function getMailItemText(item) {
+  return item.text;
+}
+
+function extractVerificationCode(text) {
+  const match = String(text || '').match(/(\\d{6})/);
+  return match ? match[1] : null;
+}
+
+async function sleep() {}
+async function sleepRandom() {}
+async function returnToInbox() {
+  return true;
+}
+async function refreshInbox() {}
+
+async function openMailAndDeleteAfterRead(item) {
+  readAndDeleteCalls.push(item.id);
+  return item.text;
+}
+
+async function ensureSeenCodesSession() {}
+function persistSeenCodes() {}
+function log() {}
+
+${bundle}
+
+return {
+  handlePollEmail,
+  getReadAndDeleteCalls() {
+    return readAndDeleteCalls.slice();
+  },
+};
+`)();
+
+  const result = await api.handlePollEmail(4, {
+    senderFilters: ['openai'],
+    subjectFilters: ['verification'],
+    filterAfterTimestamp,
+    maxAttempts: 1,
+    intervalMs: 1,
+  });
+
+  assert.equal(result.code, '222222');
+  assert.equal(result.emailTimestamp, expectedEmailTimestamp);
+  assert.deepEqual(api.getReadAndDeleteCalls(), ['new']);
+});
+
 test('openMailAndGetMessageText always returns to inbox after opening a 2925 message', async () => {
   const bundle = [
     extractFunction('returnToInbox'),

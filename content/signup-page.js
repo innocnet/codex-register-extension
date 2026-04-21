@@ -1460,16 +1460,12 @@ function isSignupPasswordErrorPage() {
   return Boolean(getSignupPasswordTimeoutErrorPageState());
 }
 
-function isSignupPasswordErrorPage() {
-  return matchesAuthTimeoutErrorPage(/\/create-account\/password(?:[/?#]|$)/i);
-}
-
 function buildStep7RestartFromStep6Marker(reason, url = location.href) {
   return `STEP7_RESTART_FROM_STEP6::${reason || 'unknown'}::${url || ''}`;
 }
 
 function getStep7RestartFromStep6Signal() {
-  if (!isLoginPage() || !matchesAuthTimeoutErrorPage(/\/log-in(?:[/?#]|$)/i)) {
+  if (!isLoginPage() || !getLoginTimeoutErrorPageState()) {
     return null;
   }
 

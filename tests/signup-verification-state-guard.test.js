@@ -4,13 +4,20 @@ const fs = require('node:fs');
 
 const source = fs.readFileSync('content/signup-page.js', 'utf8');
 
-function extractFunction(name) {
+function extractFunctionOccurrence(name, occurrence = 1) {
   const markers = [`async function ${name}(`, `function ${name}(`];
-  const start = markers
-    .map((marker) => source.indexOf(marker))
-    .find((index) => index >= 0);
-  if (start < 0) {
-    throw new Error(`missing function ${name}`);
+  let start = -1;
+  let searchFrom = 0;
+
+  for (let count = 0; count < occurrence; count += 1) {
+    start = markers
+      .map((marker) => source.indexOf(marker, searchFrom))
+      .filter((index) => index >= 0)
+      .sort((a, b) => a - b)[0] ?? -1;
+    if (start < 0) {
+      throw new Error(`missing function ${name} occurrence ${occurrence}`);
+    }
+    searchFrom = start + 1;
   }
 
   let parenDepth = 0;
@@ -50,6 +57,10 @@ function extractFunction(name) {
   }
 
   return source.slice(start, end);
+}
+
+function extractFunction(name) {
+  return extractFunctionOccurrence(name, 1);
 }
 
 test('verification visibility text fallback should not treat password retry page as verification page', () => {
@@ -176,7 +187,7 @@ function getSignupPasswordSubmitButton() {
 
 ${extractFunction('getSignupAuthRetryPathPatterns')}
 ${extractFunction('getSignupPasswordTimeoutErrorPageState')}
-${extractFunction('isSignupPasswordErrorPage')}
+${extractFunctionOccurrence('isSignupPasswordErrorPage', 1)}
 ${extractFunction('inspectSignupVerificationState')}
 
 return {
@@ -190,5 +201,41 @@ return {
     state: 'error',
     retryButton: { textContent: 'Try again' },
     userAlreadyExistsBlocked: false,
+  });
+});
+
+test('step 7 restart signal detects login timeout page without legacy matcher helper', () => {
+  const api = new Function(`
+const location = {
+  href: 'https://auth.openai.com/log-in',
+  pathname: '/log-in',
+};
+
+function isLoginPage() {
+  return true;
+}
+
+function getAuthTimeoutErrorPageState(options) {
+  return options.pathPatterns.some((pattern) => pattern.test(location.pathname))
+    ? { retryButton: { textContent: 'Try again' }, retryEnabled: true }
+    : null;
+}
+
+${extractFunction('getLoginTimeoutErrorPageState')}
+${extractFunction('buildStep7RestartFromStep6Marker')}
+${extractFunction('getStep7RestartFromStep6Signal')}
+
+return {
+  run() {
+    return getStep7RestartFromStep6Signal();
+  },
+};
+`)();
+
+  assert.deepStrictEqual(api.run(), {
+    error: 'STEP7_RESTART_FROM_STEP6::login_timeout_error_page::https://auth.openai.com/log-in',
+    restartFromStep6: true,
+    reason: 'login_timeout_error_page',
+    url: 'https://auth.openai.com/log-in',
   });
 });

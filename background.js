@@ -159,6 +159,10 @@ const AUTO_STEP_DELAY_MAX_ALLOWED_SECONDS = 600;
 const VERIFICATION_RESEND_COUNT_MIN = 0;
 const VERIFICATION_RESEND_COUNT_MAX = 20;
 const DEFAULT_VERIFICATION_RESEND_COUNT = 4;
+const VERIFICATION_POLL_INTERVAL_MIN_MS = 1000;
+const VERIFICATION_POLL_INTERVAL_MAX_MS = 60000;
+const VERIFICATION_POLL_MAX_ATTEMPTS_MIN = 1;
+const VERIFICATION_POLL_MAX_ATTEMPTS_MAX = 60;
 const LEGACY_AUTO_STEP_DELAY_KEYS = ['autoStepRandomDelayMinSeconds', 'autoStepRandomDelayMaxSeconds'];
 const LEGACY_VERIFICATION_RESEND_COUNT_KEYS = ['signupVerificationResendCount', 'loginVerificationResendCount'];
 const DEFAULT_LOCAL_CPA_STEP9_MODE = 'submit';
@@ -246,6 +250,10 @@ const PERSISTED_SETTING_DEFAULTS = {
   autoRunDelayMinutes: 30,
   autoStepDelaySeconds: null,
   verificationResendCount: DEFAULT_VERIFICATION_RESEND_COUNT,
+  signupVerificationPollIntervalMs: 20000,
+  signupVerificationPollMaxAttempts: 6,
+  loginVerificationPollIntervalMs: 20000,
+  loginVerificationPollMaxAttempts: 6,
   mailProvider: '163',
   mail2925Mode: DEFAULT_MAIL_2925_MODE,
   emailGenerator: 'duck',
@@ -406,6 +414,40 @@ function normalizeVerificationResendCount(value, fallback) {
   return Math.min(
     VERIFICATION_RESEND_COUNT_MAX,
     Math.max(VERIFICATION_RESEND_COUNT_MIN, Math.floor(numeric))
+  );
+}
+
+function normalizeVerificationPollIntervalMs(value, fallback = null) {
+  const rawValue = String(value ?? '').trim();
+  if (!rawValue) {
+    return fallback;
+  }
+
+  const numeric = Number(rawValue);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+
+  return Math.min(
+    VERIFICATION_POLL_INTERVAL_MAX_MS,
+    Math.max(VERIFICATION_POLL_INTERVAL_MIN_MS, Math.floor(numeric))
+  );
+}
+
+function normalizeVerificationPollMaxAttempts(value, fallback = null) {
+  const rawValue = String(value ?? '').trim();
+  if (!rawValue) {
+    return fallback;
+  }
+
+  const numeric = Number(rawValue);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+
+  return Math.min(
+    VERIFICATION_POLL_MAX_ATTEMPTS_MAX,
+    Math.max(VERIFICATION_POLL_MAX_ATTEMPTS_MIN, Math.floor(numeric))
   );
 }
 
@@ -870,6 +912,12 @@ function normalizePersistentSettingValue(key, value) {
       return normalizeAutoStepDelaySeconds(value, PERSISTED_SETTING_DEFAULTS.autoStepDelaySeconds);
     case 'verificationResendCount':
       return normalizeVerificationResendCount(value, DEFAULT_VERIFICATION_RESEND_COUNT);
+    case 'signupVerificationPollIntervalMs':
+    case 'loginVerificationPollIntervalMs':
+      return normalizeVerificationPollIntervalMs(value, PERSISTED_SETTING_DEFAULTS[key]);
+    case 'signupVerificationPollMaxAttempts':
+    case 'loginVerificationPollMaxAttempts':
+      return normalizeVerificationPollMaxAttempts(value, PERSISTED_SETTING_DEFAULTS[key]);
     case 'mailProvider':
       return normalizeMailProvider(value);
     case 'mail2925Mode':

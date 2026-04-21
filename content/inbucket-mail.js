@@ -135,6 +135,63 @@ function getCurrentMailboxIds() {
   return ids;
 }
 
+function parseMailTimestampText(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+
+  const now = new Date();
+  let match = null;
+
+  if (/刚刚/.test(text)) {
+    return now.getTime();
+  }
+
+  match = text.match(/(\d+)\s*分钟前/);
+  if (match) {
+    return now.getTime() - Number(match[1]) * 60 * 1000;
+  }
+
+  match = text.match(/(\d+)\s*秒前/);
+  if (match) {
+    return now.getTime() - Number(match[1]) * 1000;
+  }
+
+  match = text.match(/^(\d{1,2}):(\d{2})$/);
+  if (match) {
+    const date = new Date(now);
+    date.setHours(Number(match[1]), Number(match[2]), 0, 0);
+    return date.getTime();
+  }
+
+  match = text.match(/(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?/);
+  if (match) {
+    return new Date(
+      Number(match[1]),
+      Number(match[2]) - 1,
+      Number(match[3]),
+      Number(match[4] || 0),
+      Number(match[5] || 0),
+      0,
+      0
+    ).getTime();
+  }
+
+  match = text.match(/(\d{1,2})[-/.](\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?/);
+  if (match) {
+    return new Date(
+      now.getFullYear(),
+      Number(match[1]) - 1,
+      Number(match[2]),
+      Number(match[3] || 0),
+      Number(match[4] || 0),
+      0,
+      0
+    ).getTime();
+  }
+
+  return null;
+}
+
 async function refreshMailbox() {
   const refreshButton = document.querySelector('button[alt="Refresh Mailbox"]');
   if (!refreshButton) return;
@@ -171,9 +228,12 @@ async function handleMailboxPollEmail(step, payload) {
     subjectFilters = [],
     maxAttempts = 20,
     intervalMs = 3000,
+    filterAfterTimestamp = 0,
     excludeCodes = [],
   } = payload || {};
   const excludedCodeSet = new Set(excludeCodes.filter(Boolean));
+  const filterTimestamp = Number(filterAfterTimestamp) || 0;
+  const filterToleranceMs = filterTimestamp > 0 ? 60 * 1000 : 0;
 
   log(`步骤 ${step}：开始轮询 Inbucket 邮箱页面（最多 ${maxAttempts} 次）`);
 
@@ -203,12 +263,19 @@ async function handleMailboxPollEmail(step, payload) {
     for (const mail of entries) {
       if (!mail.unread) continue;
       if (seenMailIds.has(mail.mailId)) continue;
-      if (!useFallback && existingMailIds.has(mail.mailId)) continue;
+      const isInitialMail = existingMailIds.has(mail.mailId);
+      if (!useFallback && isInitialMail) continue;
+
+      const itemTimestamp = parseMailTimestampText(mail.dateText);
+      const passesTimeFilter = !filterTimestamp
+        || (Number.isFinite(itemTimestamp) && itemTimestamp >= (filterTimestamp - filterToleranceMs));
+      const canFallbackToSnapshotFreshness = !filterTimestamp || !isInitialMail;
+      if (!passesTimeFilter && !canFallbackToSnapshotFreshness) continue;
 
       const match = rowMatchesFilters(mail, senderFilters, subjectFilters, '');
       if (!match.matched) continue;
 
-      candidates.push({ ...mail, code: match.code });
+      candidates.push({ ...mail, code: match.code, itemTimestamp, isInitialMail, passesTimeFilter });
     }
 
     for (const mail of candidates) {
@@ -218,6 +285,9 @@ async function handleMailboxPollEmail(step, payload) {
         log(`步骤 ${step}：跳过排除的验证码：${code}`, 'info');
         continue;
       }
+      if (!mail.passesTimeFilter && filterTimestamp && mail.isInitialMail) {
+        continue;
+      }
 
       await openMailboxEntry(mail.entry);
       await deleteCurrentMailboxMessage(step);
@@ -225,7 +295,7 @@ async function handleMailboxPollEmail(step, payload) {
       seenMailIds.add(mail.mailId);
       await persistSeenMailIds();
 
-      const source = existingMailIds.has(mail.mailId) ? '回退匹配邮件' : '新邮件';
+      const source = mail.isInitialMail ? '回退匹配邮件' : '新邮件';
       log(
         `步骤 ${step}：已找到验证码：${code}（来源：${source}，发件人：${mail.sender || '未知'}，主题：${(mail.subject || '').slice(0, 60)}）`,
         'ok'
@@ -234,7 +304,7 @@ async function handleMailboxPollEmail(step, payload) {
       return {
         ok: true,
         code,
-        emailTimestamp: Date.now(),
+        emailTimestamp: Number.isFinite(mail.itemTimestamp) ? mail.itemTimestamp : Date.now(),
         mailId: mail.mailId,
       };
     }
