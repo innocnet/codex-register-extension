@@ -45,6 +45,17 @@
         "https://auth.openai.com/*",
         "https://accounts.openai.com/*"
       ],
+      "js": ["content/patches/mouse-event-patch.js"],
+      "world": "MAIN",
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "https://auth0.openai.com/*",
+        "https://auth.openai.com/*",
+        "https://accounts.openai.com/*"
+      ],
       "js": [
         "content/activation-utils.js",
         "content/utils.js",
