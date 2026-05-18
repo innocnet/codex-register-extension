@@ -38,3 +38,13 @@ test('urlFor builds query string with api_key, action and extras', () => {
   assert.equal(parsed.searchParams.get('service'), 'oi');
   assert.equal(parsed.searchParams.get('country'), '151');
 });
+
+test('getNumber returns {id, phone} on ACCESS_NUMBER response', async () => {
+  const { fetchImpl, calls } = makeFetchStub(['ACCESS_NUMBER:9876:56912345678']);
+  const client = createHerosmsClient({ apiKey: 'KEY', fetchImpl });
+  const result = await client.getNumber({ service: 'oi', country: 151 });
+  assert.deepEqual(result, { id: '9876', phone: '56912345678' });
+  const parsed = new URL(calls[0]);
+  assert.equal(parsed.searchParams.get('action'), 'getNumber');
+  assert.equal(parsed.searchParams.get('service'), 'oi');
+});

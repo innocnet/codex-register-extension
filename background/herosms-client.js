@@ -48,7 +48,40 @@
       return buildUrl(baseUrl, { api_key: apiKey, action, ...extra });
     }
 
-    return { urlFor };
+    async function callApi(action, extra = {}) {
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+      try {
+        const response = await fetchImpl(urlFor(action, extra), controller ? { signal: controller.signal } : undefined);
+        const text = (await response.text()).trim();
+        return text;
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+
+    async function getNumber({ service, country, maxPrice, operator } = {}) {
+      const text = await callApi('getNumber', { service, country, maxPrice, operator });
+      if (text.startsWith('ACCESS_NUMBER:')) {
+        const [, id, phone] = text.split(':');
+        return { id: String(id), phone: String(phone) };
+      }
+      throw parseError(text);
+    }
+
+    function parseError(text) {
+      if (!text) return new HerosmsError('empty response', 'EMPTY');
+      if (text === 'NO_NUMBERS') return new NoNumbersError();
+      if (text === 'NO_BALANCE') return new NoBalanceError();
+      if (text === 'BAD_KEY') return new AuthenticationError();
+      if (text.startsWith('BANNED:')) {
+        const until = parseInt(text.split(':')[1] || '0', 10);
+        return new BannedError(text, Number.isFinite(until) ? until : 0);
+      }
+      return new HerosmsError(text, text.toUpperCase());
+    }
+
+    return { urlFor, getNumber };
   }
 
   return {
