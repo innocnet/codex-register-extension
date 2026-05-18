@@ -56,6 +56,9 @@
       const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
       try {
         const response = await fetchImpl(urlFor(action, extra), controller ? { signal: controller.signal } : undefined);
+        if (response && response.ok === false) {
+          throw new HerosmsError(`HTTP ${response.status}`, `HTTP_${response.status}`);
+        }
         const text = (await response.text()).trim();
         return text;
       } finally {
