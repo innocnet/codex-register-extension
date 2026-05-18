@@ -86,3 +86,31 @@ test('getNumber throws BannedError with until timestamp', async () => {
     return true;
   });
 });
+
+test('getStatus returns {status:"ok", code} on STATUS_OK', async () => {
+  const { fetchImpl } = makeFetchStub(['STATUS_OK:485712']);
+  const client = createHerosmsClient({ apiKey: 'K', fetchImpl });
+  const result = await client.getStatus('123');
+  assert.deepEqual(result, { status: 'ok', code: '485712' });
+});
+
+test('getStatus returns {status:"wait"} on STATUS_WAIT_CODE', async () => {
+  const { fetchImpl } = makeFetchStub(['STATUS_WAIT_CODE']);
+  const client = createHerosmsClient({ apiKey: 'K', fetchImpl });
+  const result = await client.getStatus('123');
+  assert.deepEqual(result, { status: 'wait' });
+});
+
+test('getStatus returns {status:"wait_retry"} with lastCode on STATUS_WAIT_RETRY', async () => {
+  const { fetchImpl } = makeFetchStub(['STATUS_WAIT_RETRY:000111']);
+  const client = createHerosmsClient({ apiKey: 'K', fetchImpl });
+  const result = await client.getStatus('123');
+  assert.deepEqual(result, { status: 'wait_retry', lastCode: '000111' });
+});
+
+test('getStatus returns {status:"cancel"} on STATUS_CANCEL', async () => {
+  const { fetchImpl } = makeFetchStub(['STATUS_CANCEL']);
+  const client = createHerosmsClient({ apiKey: 'K', fetchImpl });
+  const result = await client.getStatus('123');
+  assert.deepEqual(result, { status: 'cancel' });
+});

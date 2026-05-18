@@ -69,6 +69,19 @@
       throw parseError(text);
     }
 
+    async function getStatus(id) {
+      const text = await callApi('getStatus', { id });
+      if (text === 'STATUS_WAIT_CODE') return { status: 'wait' };
+      if (text === 'STATUS_CANCEL') return { status: 'cancel' };
+      if (text.startsWith('STATUS_OK:')) {
+        return { status: 'ok', code: text.slice('STATUS_OK:'.length) };
+      }
+      if (text.startsWith('STATUS_WAIT_RETRY:')) {
+        return { status: 'wait_retry', lastCode: text.slice('STATUS_WAIT_RETRY:'.length) };
+      }
+      throw parseError(text);
+    }
+
     function parseError(text) {
       if (!text) return new HerosmsError('empty response', 'EMPTY');
       if (text === 'NO_NUMBERS') return new NoNumbersError();
@@ -81,7 +94,7 @@
       return new HerosmsError(text, text.toUpperCase());
     }
 
-    return { urlFor, getNumber };
+    return { urlFor, getNumber, getStatus };
   }
 
   return {
