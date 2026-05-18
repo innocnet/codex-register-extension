@@ -9,8 +9,8 @@
   const screenX = getRandomInt(800, 1200);
   const screenY = getRandomInt(400, 600);
   try {
-    Object.defineProperty(MouseEvent.prototype, 'screenX', { value: screenX });
-    Object.defineProperty(MouseEvent.prototype, 'screenY', { value: screenY });
+    Object.defineProperty(MouseEvent.prototype, 'screenX', { value: screenX, configurable: true });
+    Object.defineProperty(MouseEvent.prototype, 'screenY', { value: screenY, configurable: true });
   } catch (_) {
     // 已被定义过，忽略
   }
