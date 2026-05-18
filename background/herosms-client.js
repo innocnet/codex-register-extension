@@ -82,6 +82,14 @@
       throw parseError(text);
     }
 
+    const SET_STATUS_OK = new Set(['ACCESS_READY', 'ACCESS_RETRY_GET', 'ACCESS_ACTIVATION', 'ACCESS_CANCEL']);
+
+    async function setStatus(id, status) {
+      const text = await callApi('setStatus', { id, status });
+      if (SET_STATUS_OK.has(text)) return;
+      throw parseError(text);
+    }
+
     function parseError(text) {
       if (!text) return new HerosmsError('empty response', 'EMPTY');
       if (text === 'NO_NUMBERS') return new NoNumbersError();
@@ -94,7 +102,7 @@
       return new HerosmsError(text, text.toUpperCase());
     }
 
-    return { urlFor, getNumber, getStatus };
+    return { urlFor, getNumber, getStatus, setStatus };
   }
 
   return {

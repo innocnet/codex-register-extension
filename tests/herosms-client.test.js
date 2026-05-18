@@ -114,3 +114,28 @@ test('getStatus returns {status:"cancel"} on STATUS_CANCEL', async () => {
   const result = await client.getStatus('123');
   assert.deepEqual(result, { status: 'cancel' });
 });
+
+test('setStatus sends action=setStatus with status and id', async () => {
+  const { fetchImpl, calls } = makeFetchStub(['ACCESS_READY']);
+  const client = createHerosmsClient({ apiKey: 'K', fetchImpl });
+  await client.setStatus('9999', 3);
+  const parsed = new URL(calls[0]);
+  assert.equal(parsed.searchParams.get('action'), 'setStatus');
+  assert.equal(parsed.searchParams.get('id'), '9999');
+  assert.equal(parsed.searchParams.get('status'), '3');
+});
+
+test('setStatus rejects on unknown response', async () => {
+  const { fetchImpl } = makeFetchStub(['NO_ACTIVATION']);
+  const client = createHerosmsClient({ apiKey: 'K', fetchImpl });
+  await assert.rejects(() => client.setStatus('1', 6));
+});
+
+test('setStatus accepts ACCESS_READY / ACCESS_RETRY_GET / ACCESS_ACTIVATION / ACCESS_CANCEL', async () => {
+  const replies = ['ACCESS_READY', 'ACCESS_RETRY_GET', 'ACCESS_ACTIVATION', 'ACCESS_CANCEL'];
+  for (const reply of replies) {
+    const { fetchImpl } = makeFetchStub([reply]);
+    const client = createHerosmsClient({ apiKey: 'K', fetchImpl });
+    await client.setStatus('1', 1);
+  }
+});
