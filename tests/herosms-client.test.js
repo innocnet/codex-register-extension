@@ -48,3 +48,41 @@ test('getNumber returns {id, phone} on ACCESS_NUMBER response', async () => {
   assert.equal(parsed.searchParams.get('action'), 'getNumber');
   assert.equal(parsed.searchParams.get('service'), 'oi');
 });
+
+test('getNumber throws NoNumbersError on NO_NUMBERS', async () => {
+  const { fetchImpl } = makeFetchStub(['NO_NUMBERS']);
+  const client = createHerosmsClient({ apiKey: 'K', fetchImpl });
+  await assert.rejects(() => client.getNumber({ service: 'oi', country: 151 }), (err) => {
+    assert.equal(err.code, 'NO_NUMBERS');
+    assert.equal(err.name, 'NoNumbersError');
+    return true;
+  });
+});
+
+test('getNumber throws AuthenticationError on BAD_KEY', async () => {
+  const { fetchImpl } = makeFetchStub(['BAD_KEY']);
+  const client = createHerosmsClient({ apiKey: 'K', fetchImpl });
+  await assert.rejects(() => client.getNumber({ service: 'oi', country: 151 }), (err) => {
+    assert.equal(err.code, 'BAD_KEY');
+    return true;
+  });
+});
+
+test('getNumber throws NoBalanceError on NO_BALANCE', async () => {
+  const { fetchImpl } = makeFetchStub(['NO_BALANCE']);
+  const client = createHerosmsClient({ apiKey: 'K', fetchImpl });
+  await assert.rejects(() => client.getNumber({ service: 'oi', country: 151 }), (err) => {
+    assert.equal(err.code, 'NO_BALANCE');
+    return true;
+  });
+});
+
+test('getNumber throws BannedError with until timestamp', async () => {
+  const { fetchImpl } = makeFetchStub(['BANNED:1735689600']);
+  const client = createHerosmsClient({ apiKey: 'K', fetchImpl });
+  await assert.rejects(() => client.getNumber({ service: 'oi', country: 151 }), (err) => {
+    assert.equal(err.code, 'BANNED');
+    assert.equal(err.until, 1735689600);
+    return true;
+  });
+});
