@@ -7,6 +7,9 @@
 })(typeof self !== 'undefined' ? self : globalThis, function createHerosmsClientModule() {
   const DEFAULT_BASE_URL = 'https://hero-sms.com/stubs/handler_api.php';
   const DEFAULT_TIMEOUT_MS = 30000;
+  const COUNTRY_CODES = Object.freeze({ CHILE: 151, BRAZIL: 73, UK: 16 });
+  const SERVICE_OPENAI = 'oi';
+  const STATUS_CODES = Object.freeze({ SMS_SENT: 1, REQUEST_RESEND: 3, COMPLETE: 6, CANCEL: 8 });
 
   class HerosmsError extends Error {
     constructor(message, code) {
@@ -113,5 +116,8 @@
     AuthenticationError,
     BannedError,
     DEFAULT_BASE_URL,
+    COUNTRY_CODES,
+    SERVICE_OPENAI,
+    STATUS_CODES,
   };
 });

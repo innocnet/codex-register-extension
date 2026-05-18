@@ -9,6 +9,9 @@ const {
   AuthenticationError,
   BannedError,
   DEFAULT_BASE_URL,
+  COUNTRY_CODES,
+  SERVICE_OPENAI,
+  STATUS_CODES,
 } = require('../background/herosms-client.js');
 
 function makeFetchStub(responses) {
@@ -138,4 +141,15 @@ test('setStatus accepts ACCESS_READY / ACCESS_RETRY_GET / ACCESS_ACTIVATION / AC
     const client = createHerosmsClient({ apiKey: 'K', fetchImpl });
     await client.setStatus('1', 1);
   }
+});
+
+test('exports country / service / status constants used by phone-verify-flow', () => {
+  assert.equal(COUNTRY_CODES.CHILE, 151);
+  assert.equal(COUNTRY_CODES.BRAZIL, 73);
+  assert.equal(COUNTRY_CODES.UK, 16);
+  assert.equal(SERVICE_OPENAI, 'oi');
+  assert.equal(STATUS_CODES.SMS_SENT, 1);
+  assert.equal(STATUS_CODES.REQUEST_RESEND, 3);
+  assert.equal(STATUS_CODES.COMPLETE, 6);
+  assert.equal(STATUS_CODES.CANCEL, 8);
 });
