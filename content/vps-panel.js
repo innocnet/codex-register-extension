@@ -645,7 +645,7 @@ async function ensureOAuthManagementPage(vpsPassword, step = 1, timeout = 45000)
       }
 
       if ((managementKeyInput.value || '') !== vpsPassword) {
-        await humanPause(350, 900);
+        await humanPause(100, 300);
         fillInput(managementKeyInput, vpsPassword);
         console.log(LOG_PREFIX, `[Step ${step}] filled management key after ${elapsed}ms`);
         log(`步骤 ${step}：已填写 CPA 管理密钥。`);
@@ -655,13 +655,13 @@ async function ensureOAuthManagementPage(vpsPassword, step = 1, timeout = 45000)
       if (rememberCheckbox && !rememberCheckbox.checked) {
         simulateClick(rememberCheckbox);
         console.log(LOG_PREFIX, `[Step ${step}] toggled remember checkbox after ${elapsed}ms`);
-        log(`步骤 ${step}：已勾选 CPA 面板“记住密码”。`);
-        await sleep(300);
+        log(`步骤 ${step}：已勾选 CPA 面板”记住密码”。`);
+        await sleep(150);
       }
 
-      if (Date.now() - lastLoginAttemptAt > 3000) {
+      if (Date.now() - lastLoginAttemptAt > 2000) {
         lastLoginAttemptAt = Date.now();
-        await humanPause(350, 900);
+        await humanPause(100, 300);
         simulateClick(managementLoginButton);
         console.log(LOG_PREFIX, `[Step ${step}] clicked management login after ${elapsed}ms`, {
           buttonText: getInlineTextSnippet(getActionText(managementLoginButton), 80),
@@ -669,20 +669,20 @@ async function ensureOAuthManagementPage(vpsPassword, step = 1, timeout = 45000)
         log(`步骤 ${step}：已提交 CPA 管理登录。`);
       }
 
-      await sleep(1500);
+      await sleep(600);
       continue;
     }
 
     const oauthNavLink = findOAuthNavLink();
-    if (oauthNavLink && Date.now() - lastOauthNavAttemptAt > 2000) {
+    if (oauthNavLink && Date.now() - lastOauthNavAttemptAt > 1500) {
       lastOauthNavAttemptAt = Date.now();
-      await humanPause(300, 800);
+      await humanPause(100, 300);
       simulateClick(oauthNavLink);
       console.log(LOG_PREFIX, `[Step ${step}] clicked OAuth nav after ${elapsed}ms`, {
         navText: getInlineTextSnippet(getActionText(oauthNavLink), 80),
       });
-      log(`步骤 ${step}：已打开“OAuth 登录”导航。`);
-      await sleep(1200);
+      log(`步骤 ${step}：已打开”OAuth 登录”导航。`);
+      await sleep(500);
       continue;
     }
 
@@ -739,7 +739,7 @@ async function step1_getOAuthLink(payload, options = {}) {
       });
       log(`步骤 ${logStep}：OAuth 登录按钮当前不可用，正在等待授权链接出现...`);
     } else {
-      await humanPause(500, 1400);
+      await humanPause(100, 400);
       simulateClick(loginBtn);
       console.log(LOG_PREFIX, '[Step 1] clicked OAuth login button and waiting for auth URL', {
         url: location.href,

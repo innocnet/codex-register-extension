@@ -51,7 +51,7 @@
       await ensureContentScriptReadyOnTab('vps-panel', tabId, {
         inject: injectFiles,
         timeoutMs: 45000,
-        retryDelayMs: 900,
+        retryDelayMs: 400,
         logMessage: `${logLabel}：CPA 面板仍在加载，正在重试连接内容脚本...`,
       });
 

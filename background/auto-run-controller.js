@@ -28,6 +28,7 @@
       launchAutoRunTimerPlan,
       normalizeAutoRunFallbackThreadIntervalMinutes,
       persistAutoRunTimerPlan,
+      phoneVerifyCancel,
       resetState,
       runAutoSequenceFromStep,
       runtime,
@@ -372,6 +373,8 @@
               autoStepDelaySeconds: prevState.autoStepDelaySeconds,
               mailProvider: prevState.mailProvider,
               emailGenerator: prevState.emailGenerator,
+              herosmsApiKey: prevState.herosmsApiKey,
+              herosmsCountryPreference: prevState.herosmsCountryPreference,
               gmailBaseEmail: prevState.gmailBaseEmail,
               mail2925BaseEmail: prevState.mail2925BaseEmail,
               emailPrefix: prevState.emailPrefix,
@@ -385,6 +388,9 @@
               sourceLastUrls: {},
               ...getAutoRunStatusPayload('running', { currentRun: targetRun, totalRuns, attemptRun, sessionId }),
             };
+            if (typeof phoneVerifyCancel === 'function') {
+              await phoneVerifyCancel('AUTO_RUN_FRESH_ATTEMPT_RESET');
+            }
             await resetState();
             await setState(keepSettings);
             deps.chrome.runtime.sendMessage({ type: 'AUTO_RUN_RESET' }).catch(() => { });

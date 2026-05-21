@@ -91,6 +91,7 @@ let stopRequested = false;
 let runCalls = 0;
 let autoRunSessionId = 0;
 let autoRunSessionSeed = 1000;
+const phoneCancels = [];
 
 const logs = [];
 const broadcasts = [];
@@ -192,6 +193,7 @@ function normalizeAutoRunFallbackThreadIntervalMinutes(value) {
 }
 async function persistAutoRunTimerPlan() {}
 async function launchAutoRunTimerPlan() { return false; }
+async function phoneVerifyCancel(reason) { phoneCancels.push(reason); }
 function getPendingAutoRunTimerPlan() { return null; }
 function getErrorMessage(error) { return error?.message || String(error || ''); }
 function createAutoRunSessionId() {
@@ -290,6 +292,7 @@ const controller = self.MultiPageBackgroundAutoRunController.createAutoRunContro
   launchAutoRunTimerPlan,
   normalizeAutoRunFallbackThreadIntervalMinutes,
   persistAutoRunTimerPlan,
+  phoneVerifyCancel,
   resetState,
   runAutoSequenceFromStep,
   runtime,
@@ -313,6 +316,7 @@ return {
       currentState,
       logs,
       broadcasts,
+      phoneCancels,
     };
   },
 };
@@ -327,6 +331,10 @@ return {
   assert.strictEqual(snapshot.currentState.autoRunCurrentRun, 2, 'final run index should be recorded');
   assert.strictEqual(snapshot.autoRunActive, false, 'auto-run should exit active state after completion');
   assert.strictEqual(snapshot.currentState.autoRunSessionId, 0, 'session id should be cleared after completion');
+  assert.deepStrictEqual(snapshot.phoneCancels, [
+    'AUTO_RUN_FRESH_ATTEMPT_RESET',
+    'AUTO_RUN_FRESH_ATTEMPT_RESET',
+  ], 'fresh reset should cancel active phone verification first');
   assert.strictEqual(snapshot.currentState.gmailBaseEmail, 'demo@gmail.com', 'gmail base email should survive fresh-attempt reset');
   assert.strictEqual(snapshot.currentState.mail2925BaseEmail, 'demo@2925.com', '2925 base email should survive fresh-attempt reset');
 
