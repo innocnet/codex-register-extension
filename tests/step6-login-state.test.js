@@ -107,6 +107,10 @@ function isAddEmailPageReady() {
   return ${JSON.stringify(Boolean(overrides.addEmailPage))};
 }
 
+function isPhoneLoginPageReady() {
+  return ${JSON.stringify(Boolean(overrides.phoneLoginPage))};
+}
+
 function isStep8Ready() {
   return ${JSON.stringify(Boolean(overrides.consentReady))};
 }

@@ -199,7 +199,7 @@ test('exports country / service / status constants used by phone-verify-flow', (
   assert.equal(COUNTRY_CODES.CHILE, 151);
   assert.equal(COUNTRY_CODES.BRAZIL, 73);
   assert.equal(COUNTRY_CODES.UK, 16);
-  assert.equal(SERVICE_OPENAI, 'oi');
+  assert.equal(SERVICE_OPENAI, 'dr');
   assert.equal(STATUS_CODES.SMS_SENT, 1);
   assert.equal(STATUS_CODES.REQUEST_RESEND, 3);
   assert.equal(STATUS_CODES.COMPLETE, 6);
