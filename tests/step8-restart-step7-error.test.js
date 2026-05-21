@@ -115,6 +115,183 @@ return {
   );
 });
 
+test('ensureStep8VerificationPageReady accepts oauth consent page as already verified', async () => {
+  const api = new Function(`
+function getLoginAuthStateLabel() {
+  return 'unknown page';
+}
+
+async function getLoginAuthStateFromContent() {
+  return {
+    state: 'oauth_consent_page',
+    consentReady: true,
+    url: 'https://auth.openai.com/authorize',
+  };
+}
+
+${extractFunction(backgroundSource, 'ensureStep8VerificationPageReady')}
+
+return {
+  run() {
+    return ensureStep8VerificationPageReady({});
+  },
+};
+`)();
+
+  const result = await api.run();
+
+  assert.equal(result.state, 'oauth_consent_page');
+  assert.equal(result.consentReady, true);
+});
+
+test('ensureStep8VerificationPageReady returns add-phone page for HeroSMS recovery', async () => {
+  const api = new Function(`
+function getLoginAuthStateLabel() {
+  return 'phone page';
+}
+
+async function getLoginAuthStateFromContent() {
+  return {
+    state: 'add_phone_page',
+    addPhonePage: true,
+    url: 'https://auth.openai.com/add-phone',
+  };
+}
+
+${extractFunction(backgroundSource, 'ensureStep8VerificationPageReady')}
+
+return {
+  run() {
+    return ensureStep8VerificationPageReady({});
+  },
+};
+`)();
+
+  const result = await api.run();
+
+  assert.equal(result.state, 'add_phone_page');
+  assert.equal(result.addPhonePage, true);
+});
+
+test('step 8 reruns step 7 when auth page starts on add-phone', async () => {
+  const calls = {
+    ensureReady: 0,
+    rerunStep7: 0,
+    completed: [],
+    resolveCalls: 0,
+  };
+
+  const executor = step8Api.createStep8Executor({
+    addLog: async () => {},
+    chrome: {
+      tabs: {
+        update: async () => {},
+      },
+    },
+    CLOUDFLARE_TEMP_EMAIL_PROVIDER: 'cloudflare-temp-email',
+    completeStepFromBackground: async (step, payload) => {
+      calls.completed.push({ step, payload });
+    },
+    confirmCustomVerificationStepBypass: async () => {},
+    ensureStep8VerificationPageReady: async () => {
+      calls.ensureReady += 1;
+      if (calls.ensureReady === 1) {
+        return { state: 'add_phone_page', addPhonePage: true };
+      }
+      return { state: 'oauth_consent_page', consentReady: true };
+    },
+    getOAuthFlowRemainingMs: async () => 8000,
+    getOAuthFlowStepTimeoutMs: async (defaultTimeoutMs) => Math.min(defaultTimeoutMs, 8000),
+    getMailConfig: () => ({ provider: 'qq', label: 'QQ mail' }),
+    getState: async () => ({}),
+    getTabId: async () => 1,
+    HOTMAIL_PROVIDER: 'hotmail-api',
+    isTabAlive: async () => true,
+    isVerificationMailPollingError: () => false,
+    LUCKMAIL_PROVIDER: 'luckmail-api',
+    resolveVerificationStep: async () => {
+      calls.resolveCalls += 1;
+    },
+    rerunStep7ForStep8Recovery: async () => {
+      calls.rerunStep7 += 1;
+    },
+    reuseOrCreateTab: async () => {},
+    setState: async () => {},
+    shouldUseCustomRegistrationEmail: () => false,
+    STANDARD_MAIL_VERIFICATION_RESEND_INTERVAL_MS: 25000,
+    STEP7_MAIL_POLLING_RECOVERY_MAX_ATTEMPTS: 3,
+    throwIfStopped: () => {},
+  });
+
+  await executor.executeStep8({ email: 'user@example.com' });
+
+  assert.equal(calls.rerunStep7, 1);
+  assert.equal(calls.ensureReady, 2);
+  assert.deepEqual(calls.completed, [
+    { step: 8, payload: { loginVerificationBypassed: true } },
+  ]);
+  assert.equal(calls.resolveCalls, 0);
+});
+
+test('step 8 completes immediately when phone verification already reached oauth consent', async () => {
+  const calls = {
+    completed: [],
+    logs: [],
+    resolveCalls: 0,
+  };
+
+  const executor = step8Api.createStep8Executor({
+    addLog: async (message, level) => {
+      calls.logs.push({ message, level });
+    },
+    chrome: {
+      tabs: {
+        update: async () => {},
+      },
+    },
+    CLOUDFLARE_TEMP_EMAIL_PROVIDER: 'cloudflare-temp-email',
+    completeStepFromBackground: async (step, payload) => {
+      calls.completed.push({ step, payload });
+    },
+    confirmCustomVerificationStepBypass: async () => {},
+    ensureStep8VerificationPageReady: async () => ({
+      state: 'oauth_consent_page',
+      consentReady: true,
+      url: 'https://auth.openai.com/authorize',
+    }),
+    getOAuthFlowRemainingMs: async () => 8000,
+    getOAuthFlowStepTimeoutMs: async (defaultTimeoutMs) => Math.min(defaultTimeoutMs, 8000),
+    getMailConfig: () => ({ provider: 'qq', label: 'QQ mail' }),
+    getState: async () => ({}),
+    getTabId: async () => 1,
+    HOTMAIL_PROVIDER: 'hotmail-api',
+    isTabAlive: async () => true,
+    isVerificationMailPollingError: () => false,
+    LUCKMAIL_PROVIDER: 'luckmail-api',
+    resolveVerificationStep: async () => {
+      calls.resolveCalls += 1;
+    },
+    rerunStep7ForStep8Recovery: async () => {},
+    reuseOrCreateTab: async () => {},
+    setState: async () => {},
+    shouldUseCustomRegistrationEmail: () => false,
+    STANDARD_MAIL_VERIFICATION_RESEND_INTERVAL_MS: 25000,
+    STEP7_MAIL_POLLING_RECOVERY_MAX_ATTEMPTS: 3,
+    throwIfStopped: () => {},
+  });
+
+  await executor.executeStep8({
+    email: 'user@example.com',
+    loginVerificationBypassed: true,
+  });
+
+  assert.deepEqual(calls.completed, [
+    { step: 8, payload: { loginVerificationBypassed: true } },
+  ]);
+  assert.equal(calls.resolveCalls, 0);
+  assert.equal(calls.logs.some(({ message }) => /跳过登录邮箱验证码/.test(message)), true);
+});
+
 test('step 8 reruns step 7 when auth page enters login timeout retry state', async () => {
   const calls = {
     rerunStep7: 0,

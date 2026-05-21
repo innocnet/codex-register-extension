@@ -24,8 +24,9 @@
     } = deps;
 
     async function executeStep7(state) {
-      if (!state.email) {
-        throw new Error('缺少邮箱地址，请先完成步骤 3。');
+      const loginIdentifier = state.signupPhone || state.email || null;
+      if (!loginIdentifier) {
+        throw new Error('缺少登录凭据（邮箱或手机号），请先完成步骤 3。');
       }
 
       let attempt = 0;
@@ -37,6 +38,7 @@
         try {
           const currentState = attempt === 1 ? state : await getState();
           const password = currentState.password || currentState.customPassword || '';
+          const currentIdentifier = currentState.signupPhone || currentState.email || loginIdentifier;
           const oauthUrl = await refreshOAuthUrlBeforeStep6(currentState);
           if (typeof startOAuthFlowTimeoutWindow === 'function') {
             await startOAuthFlowTimeoutWindow({ step: 7, oauthUrl });
@@ -55,6 +57,8 @@
             await addLog(`步骤 7：上一轮失败后，正在进行第 ${attempt} 次尝试（最多 ${STEP6_MAX_ATTEMPTS} 次）...`, 'warn');
           }
 
+          await addLog(`步骤 7 [诊断]: state.signupPhone=${currentState.signupPhone || 'null'} state.signupPhoneCountry=${currentState.signupPhoneCountry ?? 'null'} state.email=${currentState.email || 'null'}`, 'info');
+
           await reuseOrCreateTab('signup-page', oauthUrl);
 
           const result = await sendToContentScriptResilient(
@@ -64,7 +68,10 @@
               step: 7,
               source: 'background',
               payload: {
-                email: currentState.email,
+                email: currentState.email || null,
+                phone: currentState.signupPhone || null,
+                phoneCountry: currentState.signupPhoneCountry || null,
+                loginIdentifier: currentIdentifier,
                 password,
               },
             },
@@ -83,6 +90,7 @@
           if (isStep6SuccessResult(result)) {
             await completeStepFromBackground(7, {
               loginVerificationRequestedAt: result.loginVerificationRequestedAt || null,
+              loginVerificationBypassed: Boolean(result.loginVerificationBypassed),
             });
             return;
           }

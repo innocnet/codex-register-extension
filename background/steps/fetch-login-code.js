@@ -6,6 +6,7 @@
       addLog,
       chrome,
       CLOUDFLARE_TEMP_EMAIL_PROVIDER,
+      completeStepFromBackground,
       confirmCustomVerificationStepBypass,
       ensureStep8VerificationPageReady,
       getOAuthFlowRemainingMs,
@@ -61,6 +62,19 @@
 
       const stepStartedAt = Date.now();
       const verificationSessionKey = `8:${stepStartedAt}`;
+      const FILTER_BUFFER_MS = 15_000;
+      const loginRequestedAt = Number(state.loginVerificationRequestedAt) || 0;
+      const mailFilterAfterTimestamp = loginRequestedAt > 0
+        ? Math.max(0, loginRequestedAt - FILTER_BUFFER_MS)
+        : stepStartedAt;
+      if (loginRequestedAt > 0) {
+        await addLog(
+          `步骤 8：邮件过滤起点 = step 7 发邮件时刻 (${new Date(loginRequestedAt).toLocaleTimeString()}) - ${Math.round(FILTER_BUFFER_MS / 1000)}s buffer`,
+          'info'
+        );
+      } else {
+        await addLog('步骤 8：未取到 step 7 的 loginVerificationRequestedAt，过滤起点回退到 step 8 启动时刻。', 'warn');
+      }
       const authTabId = await getTabId('signup-page');
 
       if (authTabId) {
@@ -73,9 +87,25 @@
       }
 
       throwIfStopped();
-      const pageState = await ensureStep8VerificationPageReady({
+      let pageState = await ensureStep8VerificationPageReady({
         timeoutMs: await getStep8ReadyTimeoutMs('确认登录验证码页已就绪', state?.oauthUrl || ''),
       });
+      if (pageState.state === 'add_phone_page') {
+        await rerunStep7ForStep8Recovery({
+          logMessage: '步骤 8：认证页进入手机号验证页，正在回到步骤 7 通过 HeroSMS 完成手机号验证...',
+          postStepDelayMs: 500,
+        });
+        pageState = await ensureStep8VerificationPageReady({
+          timeoutMs: await getStep8ReadyTimeoutMs('确认手机号验证后的认证页状态', state?.oauthUrl || ''),
+        });
+      }
+      if (pageState.state === 'oauth_consent_page' || pageState.consentReady || state.loginVerificationBypassed) {
+        await addLog('步骤 8：手机号验证已完成并进入 OAuth 授权页，跳过登录邮箱验证码。', 'ok');
+        if (typeof completeStepFromBackground === 'function') {
+          await completeStepFromBackground(8, { loginVerificationBypassed: true });
+        }
+        return;
+      }
       const shouldCompareVerificationEmail = mail.provider !== '2925';
       const displayedVerificationEmail = shouldCompareVerificationEmail
         ? normalizeStep8VerificationTargetEmail(pageState?.displayedEmail)
@@ -131,10 +161,12 @@
         ...state,
         step8VerificationTargetEmail: displayedVerificationEmail || '',
       }, mail, {
-        filterAfterTimestamp: stepStartedAt,
+        filterAfterTimestamp: mailFilterAfterTimestamp,
         sessionKey: verificationSessionKey,
+        stepEnteredAt: stepStartedAt,
         disableTimeBudgetCap: mail.provider === '2925',
         getRemainingTimeMs: getStep8RemainingTimeResolver(state?.oauthUrl || ''),
+        disableSubmitResponseTimeBudgetCap: true,
         requestFreshCodeFirst: false,
         targetEmail: fixedTargetEmail,
         resendIntervalMs: (mail.provider === HOTMAIL_PROVIDER || mail.provider === '2925')

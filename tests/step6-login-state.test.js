@@ -103,6 +103,10 @@ function isAddPhonePageReady() {
   return ${JSON.stringify(Boolean(overrides.addPhonePage))};
 }
 
+function isAddEmailPageReady() {
+  return ${JSON.stringify(Boolean(overrides.addEmailPage))};
+}
+
 function isStep8Ready() {
   return ${JSON.stringify(Boolean(overrides.consentReady))};
 }
@@ -131,8 +135,8 @@ return {
   const snapshot = api.inspectLoginAuthState();
   assert.strictEqual(
     snapshot.state,
-    'email_page',
-    '第六步在 /log-in 页应优先识别为邮箱页'
+    'oauth_consent_page',
+    'OAuth 授权页应优先识别为授权就绪状态'
   );
 }
 
@@ -144,6 +148,16 @@ return {
 
   const snapshot = api.inspectLoginAuthState();
   assert.strictEqual(snapshot.displayedEmail, 'display.user@example.com');
+}
+
+{
+  const api = createApi({
+    verificationTarget: { id: 'phone-number' },
+    addPhonePage: true,
+  });
+
+  const snapshot = api.inspectLoginAuthState();
+  assert.strictEqual(snapshot.state, 'add_phone_page');
 }
 
 {
@@ -161,8 +175,8 @@ return {
 }
 
 assert.ok(
-  !extractFunction('inspectLoginAuthState').includes("state: 'oauth_consent_page'"),
-  'inspectLoginAuthState 不应再产出 oauth_consent_page 状态'
+  extractFunction('inspectLoginAuthState').includes("state: 'oauth_consent_page'"),
+  'inspectLoginAuthState 应产出 oauth_consent_page 状态供 Step 8 手机号验证旁路使用'
 );
 
 console.log('step6 login state tests passed');

@@ -10,27 +10,44 @@ function isMailApplicationFrame() {
   return Boolean(document.querySelector('.content-container, .mail-message-defaults, .thread-participants'));
 }
 
+async function waitForMailApplicationFrame(timeoutMs = 15000, intervalMs = 300) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (isMailApplicationFrame()) return true;
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+  }
+  return isMailApplicationFrame();
+}
+
 if (isTopFrame) {
   console.log(ICLOUD_MAIL_PREFIX, 'Top frame detected; waiting for mail iframe.');
 } else {
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'POLL_EMAIL') {
-      if (!isMailApplicationFrame()) {
-        sendResponse({ ok: false, reason: 'wrong-frame' });
-        return;
-      }
-      resetStopState();
-      handlePollEmail(message.step, message.payload).then((result) => {
-        sendResponse(result);
-      }).catch((err) => {
-        if (isStopError(err)) {
-          log(`步骤 ${message.step}：已被用户停止。`, 'warn');
-          sendResponse({ stopped: true, error: err.message });
-          return;
+      (async () => {
+        // 优化 1: 首次接收 POLL_EMAIL 时 iCloud Mail 应用可能还未渲染好，
+        // 不再立刻返回 wrong-frame，而是给它最多 15 秒加载时间。
+        if (!isMailApplicationFrame()) {
+          const ok = await waitForMailApplicationFrame(15000);
+          if (!ok) {
+            sendResponse({ ok: false, reason: 'wrong-frame' });
+            return;
+          }
         }
-        log(`步骤 ${message.step}：iCloud 邮箱轮询失败：${err.message}`, 'warn');
-        sendResponse({ error: err.message });
-      });
+        resetStopState();
+        try {
+          const result = await handlePollEmail(message.step, message.payload);
+          sendResponse(result);
+        } catch (err) {
+          if (isStopError(err)) {
+            log(`步骤 ${message.step}：已被用户停止。`, 'warn');
+            sendResponse({ stopped: true, error: err.message });
+            return;
+          }
+          log(`步骤 ${message.step}：iCloud 邮箱轮询失败：${err.message}`, 'warn');
+          sendResponse({ error: err.message });
+        }
+      })();
       return true;
     }
   });

@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 
-test('step 6 runs cookie cleanup and completes from background', async () => {
+test('step 6 skips cookie cleanup and completes from background immediately', async () => {
   const source = fs.readFileSync('background/steps/clear-login-cookies.js', 'utf8');
   const globalScope = {};
   const api = new Function('self', `${source}; return self.MultiPageBackgroundStep6;`)(globalScope);
@@ -16,14 +16,11 @@ test('step 6 runs cookie cleanup and completes from background', async () => {
     completeStepFromBackground: async (step) => {
       events.completedSteps.push(step);
     },
-    runPreStep6CookieCleanup: async () => {
-      events.cleanupCalls += 1;
-    },
   });
 
   await executor.executeStep6();
 
-  assert.equal(events.cleanupCalls, 1);
+  assert.equal(events.cleanupCalls, 0, 'step 6 must NOT call cookie cleanup');
   assert.deepStrictEqual(events.completedSteps, [6]);
 });
 

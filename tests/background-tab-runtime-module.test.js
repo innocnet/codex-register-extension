@@ -16,6 +16,26 @@ test('tab runtime module exposes a factory', () => {
   assert.equal(typeof api?.createTabRuntime, 'function');
 });
 
+test('tab runtime gives step 8 fill-code a long response window for HeroSMS phone flow', () => {
+  const source = fs.readFileSync('background/tab-runtime.js', 'utf8');
+  const globalScope = {};
+  const api = new Function('self', `${source}; return self.MultiPageBackgroundTabRuntime;`)(globalScope);
+
+  const runtime = api.createTabRuntime({
+    LOG_PREFIX: '[test]',
+    addLog: async () => {},
+    chrome: { tabs: { query: async () => [] } },
+    getSourceLabel: (sourceName) => sourceName || 'unknown',
+    getState: async () => ({ tabRegistry: {}, sourceLastUrls: {} }),
+    matchesSourceUrlFamily: () => false,
+    setState: async () => {},
+    throwIfStopped: () => {},
+  });
+
+  assert.equal(runtime.getContentScriptResponseTimeoutMs({ type: 'FILL_CODE', step: 8 }), 600000);
+  assert.equal(runtime.getContentScriptResponseTimeoutMs({ type: 'FILL_CODE', step: 7 }), 45000);
+});
+
 test('tab runtime waitForTabComplete waits until tab status becomes complete', async () => {
   const source = fs.readFileSync('background/tab-runtime.js', 'utf8');
   const globalScope = {};

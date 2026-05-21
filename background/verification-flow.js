@@ -175,12 +175,17 @@
     }
 
     async function getResponseTimeoutMsForStep(step, options = {}, fallbackMs = 30000, actionLabel = '') {
-      const remainingMs = await getRemainingTimeBudgetMs(step, options, actionLabel);
-      if (remainingMs === null) {
-        return Math.max(1000, Number(fallbackMs) || 1000);
+      const normalizedFallbackMs = Math.max(1000, Number(fallbackMs) || 1000);
+      if (options.disableSubmitResponseTimeBudgetCap) {
+        return normalizedFallbackMs;
       }
 
-      return Math.max(1000, Math.min(Math.max(1000, Number(fallbackMs) || 1000), remainingMs));
+      const remainingMs = await getRemainingTimeBudgetMs(step, options, actionLabel);
+      if (remainingMs === null) {
+        return normalizedFallbackMs;
+      }
+
+      return Math.max(1000, Math.min(normalizedFallbackMs, remainingMs));
     }
 
     async function applyMailPollingTimeBudget(step, payload, options = {}, actionLabel = '') {
@@ -368,6 +373,10 @@
       const resendIntervalMs = Math.max(0, Number(pollOverrides.resendIntervalMs) || 0);
       let lastResendAt = Number(pollOverrides.lastResendAt) || 0;
       let usedResendRequests = 0;
+      // 优化 2: 当从未重发过时，用 step 进入时刻 (or step 7 发邮件时刻) 作为隐式的"上次发邮件时间"，
+      //          否则首次轮询失败会被错误地立即触发重发（lastResendAt=0 → remaining=0 → 立刻重发）。
+      const stepEnteredAt = Number(pollOverrides.stepEnteredAt) || Date.now();
+      const effectiveLastResendAt = () => (lastResendAt > 0 ? lastResendAt : stepEnteredAt);
 
       for (let round = 1; round <= totalRounds; round++) {
         throwIfStopped();
@@ -390,12 +399,12 @@
             excludeCodes: [...rejectedCodes],
           });
 
-          if (lastResendAt > 0) {
-            const remainingBeforeResendMs = Math.max(0, resendIntervalMs - (Date.now() - lastResendAt));
-            const baseMaxAttempts = Math.max(1, Number(payload.maxAttempts) || 5);
-            const intervalMs = Math.max(1, Number(payload.intervalMs) || 3000);
-            payload.maxAttempts = Math.max(1, Math.min(baseMaxAttempts, Math.floor(remainingBeforeResendMs / intervalMs) + 1));
-          }
+          // 现在 effectiveLastResendAt 一定有值（首轮用 stepEnteredAt），
+          // 内部 maxAttempts 总是按"距离下次重发还剩多久"动态收紧，避免在中间长时间空转。
+          const baseRemainingBeforeResendMs = Math.max(0, resendIntervalMs - (Date.now() - effectiveLastResendAt()));
+          const baseMaxAttempts = Math.max(1, Number(payload.maxAttempts) || 5);
+          const baseIntervalMs = Math.max(1, Number(payload.intervalMs) || 3000);
+          payload.maxAttempts = Math.max(1, Math.min(baseMaxAttempts, Math.floor(baseRemainingBeforeResendMs / baseIntervalMs) + 1));
 
           try {
             const timedPoll = await applyMailPollingTimeBudget(
@@ -444,19 +453,21 @@
             await addLog(`步骤 ${step}：${err.message}`, 'warn');
           }
 
-          const remainingBeforeResendMs = lastResendAt > 0
-            ? Math.max(0, resendIntervalMs - (Date.now() - lastResendAt))
-            : 0;
+          const remainingBeforeResendMs = Math.max(0, resendIntervalMs - (Date.now() - effectiveLastResendAt()));
           if (remainingBeforeResendMs > 0) {
+            const stillFirstRound = lastResendAt === 0;
+            const baseLabel = stillFirstRound
+              ? `首次轮询暂未命中（距入口 ${Math.round((Date.now() - stepEnteredAt) / 1000)}s）`
+              : `本轮轮询暂未命中`;
             await addLog(
-              `步骤 ${step}：距离下次重新发送验证码还差 ${Math.ceil(remainingBeforeResendMs / 1000)} 秒，继续刷新邮箱（第 ${round}/${maxRounds} 轮）...`,
+              `步骤 ${step}：${baseLabel}，距下次重新发送验证码还差 ${Math.ceil(remainingBeforeResendMs / 1000)} 秒，继续刷新邮箱（第 ${round}/${maxRounds} 轮）...`,
               'info'
             );
             continue;
           }
 
           if (round < maxRounds) {
-            await addLog(`步骤 ${step}：已到 25 秒重发间隔，准备重新发送验证码（第 ${round + 1}/${maxRounds} 轮）...`, 'warn');
+            await addLog(`步骤 ${step}：已到 ${Math.round(resendIntervalMs / 1000)} 秒重发间隔，准备重新发送验证码（第 ${round + 1}/${maxRounds} 轮）...`, 'warn');
           }
           break;
         }
@@ -604,7 +615,7 @@
         responseTimeoutMs: await getResponseTimeoutMsForStep(
           step,
           options,
-          step === 7 ? 45000 : 30000,
+          step === 8 ? 600000 : (step === 7 ? 45000 : 30000),
           `填写${getVerificationCodeLabel(step)}验证码`
         ),
       });
@@ -684,6 +695,9 @@
           }
         }
 
+        // stepEnteredAt: 优化 2 — 作为 lastResendAt=0 时的隐式"上次发邮件时间"，
+        // 避免首次轮询失败被错误地立即触发重发。
+        const stepEnteredAt = Number(options.stepEnteredAt) || Date.now();
         for (let attempt = 1; attempt <= maxSubmitAttempts; attempt++) {
           const pollOptions = {
             excludeCodes: [...rejectedCodes],
@@ -692,6 +706,7 @@
             maxResendRequests: remainingAutomaticResendCount,
             resendIntervalMs,
             lastResendAt,
+            stepEnteredAt,
             onResendRequestedAt: updateFilterAfterTimestampForVerificationStep,
           };
           if (nextFilterAfterTimestamp !== null && nextFilterAfterTimestamp !== undefined) {

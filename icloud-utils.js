@@ -150,6 +150,8 @@
       .map((alias) => normalizeIcloudAliasRecord(alias, options))
       .filter(Boolean)
       .sort((left, right) => {
+        const labelCmp = String(right.label || '').localeCompare(String(left.label || ''), undefined, { numeric: true, sensitivity: 'base' });
+        if (labelCmp !== 0) return labelCmp;
         if (left.active !== right.active) return left.active ? -1 : 1;
         if (left.used !== right.used) return left.used ? 1 : -1;
         return String(left.email).localeCompare(String(right.email));

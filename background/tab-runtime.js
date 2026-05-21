@@ -371,7 +371,10 @@
         const intervalMs = Math.max(0, Number(message.payload?.intervalMs) || 0);
         return Math.max(45000, maxAttempts * intervalMs + 25000);
       }
-      if (message.type === 'FILL_CODE') return Number(message.step) === 7 ? 45000 : 30000;
+      if (message.type === 'FILL_CODE') {
+        if (Number(message.step) === 8) return 600000;
+        return Number(message.step) === 7 ? 45000 : 30000;
+      }
       if (message.type === 'PREPARE_SIGNUP_VERIFICATION') return 45000;
       return 30000;
     }

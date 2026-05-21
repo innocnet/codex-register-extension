@@ -4,11 +4,9 @@
   function createStep6Executor(deps = {}) {
     const {
       completeStepFromBackground,
-      runPreStep6CookieCleanup,
     } = deps;
 
     async function executeStep6() {
-      await runPreStep6CookieCleanup();
       await completeStepFromBackground(6);
     }
 
