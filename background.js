@@ -8,6 +8,9 @@ importScripts(
   'background/generated-email-helpers.js',
   'background/signup-flow-helpers.js',
   'background/message-router.js',
+  'background/herosms-client.js',
+  'background/phone-verify-flow.js',
+  'background/accounts-exporter.js',
   'background/verification-flow.js',
   'background/auto-run-controller.js',
   'background/tab-runtime.js',
@@ -256,9 +259,24 @@ const PERSISTED_SETTING_DEFAULTS = {
   loginVerificationPollMaxAttempts: 6,
   mailProvider: '163',
   mail2925Mode: DEFAULT_MAIL_2925_MODE,
-  emailGenerator: 'duck',
+  emailGenerator: 'icloud',
+  herosmsApiKey: '',
+  herosmsCountryPreference: 'auto',
+  herosmsCountries: [
+    { code: 151, enabled: true },
+    { code: 73, enabled: true },
+    { code: 16, enabled: true },
+    { code: 0, enabled: false },
+    { code: 6, enabled: false },
+    { code: 22, enabled: false },
+  ],
+  herosmsMaxPricePerNumber: 0.5,
+  herosmsPollTimeoutSeconds: 120,
+  herosmsPollIntervalSeconds: 5,
+  herosmsMaxResendAttempts: 2,
   autoDeleteUsedIcloudAlias: false,
   icloudHostPreference: 'auto',
+  icloudAliasLabelPattern: '{seq:003}',
   accountRunHistoryTextEnabled: false,
   accountRunHistoryHelperBaseUrl: DEFAULT_ACCOUNT_RUN_HISTORY_HELPER_BASE_URL,
   gmailBaseEmail: '',
@@ -307,6 +325,8 @@ const DEFAULT_STATE = {
   ...CONTRIBUTION_RUNTIME_DEFAULTS,
   oauthUrl: null, // 运行时抓取到的 OAuth 地址，不要手动预填。
   email: null, // 运行时邮箱，由程序自动获取并写入，不能手动预填。
+  signupPhone: null, // 手机号注册时使用的手机号，由程序自动写入。
+  signupPhoneCountry: null, // 手机号注册时使用的 HeroSMS 国家代码，由程序自动写入。
   password: null, // 运行时实际密码，由 customPassword 或程序自动生成后写入。
   accounts: [], // 已生成账号记录：{ email, password, createdAt }。
   accountRunHistory: [], // 账号运行历史快照，实际持久化在 chrome.storage.local。
@@ -349,6 +369,8 @@ const DEFAULT_STATE = {
   autoRunCountdownNote: '',
   signupVerificationRequestedAt: null,
   loginVerificationRequestedAt: null,
+  loginVerificationBypassed: false,
+  currentPhoneActivation: null,
   oauthFlowDeadlineAt: null,
   oauthFlowDeadlineSourceUrl: null,
   currentHotmailAccountId: null,
@@ -674,7 +696,65 @@ function normalizeEmailGenerator(value = '') {
   }
   if (normalized === 'cloudflare') return 'cloudflare';
   if (normalized === CLOUDFLARE_TEMP_EMAIL_GENERATOR) return CLOUDFLARE_TEMP_EMAIL_GENERATOR;
-  return 'duck';
+  return typeof PERSISTED_SETTING_DEFAULTS !== 'undefined'
+    ? PERSISTED_SETTING_DEFAULTS.emailGenerator
+    : 'icloud';
+}
+
+function normalizeHerosmsCountryPreference(value = '') {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'chile' || normalized === 'cl' || normalized === '151') return 'chile';
+  if (normalized === 'brazil' || normalized === 'br' || normalized === '73') return 'brazil';
+  if (normalized === 'uk' || normalized === 'england' || normalized === 'gb' || normalized === '16') return 'uk';
+  return 'auto';
+}
+
+function normalizeHerosmsCountries(value) {
+  const fallback = typeof PERSISTED_SETTING_DEFAULTS !== 'undefined'
+    && Array.isArray(PERSISTED_SETTING_DEFAULTS.herosmsCountries)
+    ? PERSISTED_SETTING_DEFAULTS.herosmsCountries
+    : [
+      { code: 151, enabled: true },
+      { code: 73, enabled: true },
+      { code: 16, enabled: true },
+    ];
+
+  const source = Array.isArray(value) ? value : null;
+  if (!source) {
+    return fallback.map(entry => ({ code: entry.code, enabled: Boolean(entry.enabled) }));
+  }
+
+  const seen = new Set();
+  const normalized = [];
+  for (const entry of source) {
+    if (!entry) continue;
+    const code = Number(typeof entry === 'object' ? entry.code : entry);
+    if (!Number.isFinite(code) || code < 0) continue;
+    if (seen.has(code)) continue;
+    seen.add(code);
+    const enabled = typeof entry === 'object' && entry.enabled !== undefined
+      ? Boolean(entry.enabled)
+      : true;
+    normalized.push({ code: Math.floor(code), enabled });
+  }
+  if (normalized.length === 0) {
+    return fallback.map(entry => ({ code: entry.code, enabled: Boolean(entry.enabled) }));
+  }
+  return normalized;
+}
+
+function normalizeHerosmsMaxPricePerNumber(value) {
+  const fallback = typeof PERSISTED_SETTING_DEFAULTS !== 'undefined'
+    ? PERSISTED_SETTING_DEFAULTS.herosmsMaxPricePerNumber
+    : 0.5;
+  if (value === '' || value === null || value === undefined) {
+    return fallback;
+  }
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) {
+    return fallback;
+  }
+  return Math.round(numeric * 10000) / 10000;
 }
 
 function normalizePanelMode(value = '') {
@@ -924,11 +1004,21 @@ function normalizePersistentSettingValue(key, value) {
       return normalizeMail2925Mode(value);
     case 'emailGenerator':
       return normalizeEmailGenerator(value);
+    case 'herosmsApiKey':
+      return String(value || '').trim();
+    case 'herosmsCountryPreference':
+      return normalizeHerosmsCountryPreference(value);
+    case 'herosmsCountries':
+      return normalizeHerosmsCountries(value);
+    case 'herosmsMaxPricePerNumber':
+      return normalizeHerosmsMaxPricePerNumber(value);
     case 'autoDeleteUsedIcloudAlias':
     case 'accountRunHistoryTextEnabled':
       return Boolean(value);
     case 'icloudHostPreference':
       return normalizeIcloudHost(value) || 'auto';
+    case 'icloudAliasLabelPattern':
+      return normalizeIcloudAliasLabelPattern(value);
     case 'accountRunHistoryHelperBaseUrl':
       return normalizeAccountRunHistoryHelperBaseUrl(value);
     case 'gmailBaseEmail':
@@ -3372,10 +3462,96 @@ async function resolveIcloudPremiumMailService() {
     : 'Could not validate iCloud session. 请先在当前浏览器登录 icloud.com.cn 或 icloud.com。');
 }
 
-function getIcloudAliasLabel() {
-  const now = new Date();
-  const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-  return `MultiPage ${dateStr}`;
+const DEFAULT_ICLOUD_ALIAS_LABEL_PATTERN = '{seq:003}';
+
+function normalizeIcloudAliasLabelPattern(value) {
+  if (value === null || value === undefined) return DEFAULT_ICLOUD_ALIAS_LABEL_PATTERN;
+  const trimmed = String(value).trim();
+  if (!trimmed) return DEFAULT_ICLOUD_ALIAS_LABEL_PATTERN;
+  return trimmed.slice(0, 80);
+}
+
+function buildIcloudAliasLabelPatternRegex(pattern) {
+  const source = String(pattern || '');
+  let regex = '';
+  let seqGroupIndex = null;
+  let groupCounter = 0;
+  let hasSeqToken = false;
+  let i = 0;
+  while (i < source.length) {
+    if (source[i] === '{') {
+      const end = source.indexOf('}', i);
+      if (end !== -1) {
+        const inner = source.substring(i + 1, end);
+        const seqMatch = inner.match(/^seq(?::(\d+))?$/);
+        if (seqMatch) {
+          hasSeqToken = true;
+          groupCounter += 1;
+          if (seqGroupIndex === null) seqGroupIndex = groupCounter;
+          const width = seqMatch[1] ? Number(seqMatch[1]) : null;
+          regex += width ? `(\\d{${width}})` : `(\\d+)`;
+          i = end + 1;
+          continue;
+        }
+        if (inner === 'date') {
+          regex += '\\d{4}-\\d{2}-\\d{2}';
+          i = end + 1;
+          continue;
+        }
+      }
+    }
+    const ch = source[i];
+    if (/[.*+?^${}()|[\]\\]/.test(ch)) {
+      regex += '\\' + ch;
+    } else {
+      regex += ch;
+    }
+    i += 1;
+  }
+  return {
+    regex: new RegExp('^' + regex + '$'),
+    seqGroupIndex,
+    hasSeqToken,
+  };
+}
+
+function computeNextIcloudAliasSequence(existingAliases, pattern) {
+  const compiled = buildIcloudAliasLabelPatternRegex(pattern);
+  if (!compiled.hasSeqToken) return 1;
+  let maxSeq = 0;
+  for (const alias of Array.isArray(existingAliases) ? existingAliases : []) {
+    const label = String(alias?.label || '').trim();
+    if (!label) continue;
+    const match = label.match(compiled.regex);
+    if (!match) continue;
+    const seqStr = match[compiled.seqGroupIndex];
+    const numeric = parseInt(seqStr, 10);
+    if (Number.isFinite(numeric) && numeric > maxSeq) maxSeq = numeric;
+  }
+  return maxSeq + 1;
+}
+
+function formatIcloudAliasLabel(pattern, context = {}) {
+  const source = String(pattern || '');
+  const seq = Number.isFinite(Number(context.seq)) ? Number(context.seq) : 1;
+  const date = String(context.date || '').trim()
+    || (() => {
+      const now = new Date();
+      return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    })();
+  return source
+    .replace(/\{seq(?::(\d+))?\}/g, (_, width) => {
+      const w = Number(width) || 0;
+      const str = String(seq);
+      return w > 0 ? str.padStart(w, '0') : str;
+    })
+    .replace(/\{date\}/g, date);
+}
+
+function getIcloudAliasLabel(pattern, existingAliases) {
+  const resolvedPattern = normalizeIcloudAliasLabelPattern(pattern);
+  const seq = computeNextIcloudAliasSequence(existingAliases, resolvedPattern);
+  return formatIcloudAliasLabel(resolvedPattern, { seq });
 }
 
 async function checkIcloudSession() {
@@ -3511,7 +3687,7 @@ async function fetchIcloudHideMyEmail() {
     const reserved = await icloudRequest('POST', `${serviceUrl}/v1/hme/reserve`, {
       data: {
         hme: generated.result.hme,
-        label: getIcloudAliasLabel(),
+        label: getIcloudAliasLabel(state.icloudAliasLabelPattern, existingAliases),
         note: 'Generated through Multi-Page Automation',
       },
     });
@@ -4119,6 +4295,7 @@ function getDownstreamStateResets(step) {
       lastEmailTimestamp: null,
       signupVerificationRequestedAt: null,
       loginVerificationRequestedAt: null,
+      loginVerificationBypassed: false,
       oauthFlowDeadlineAt: null,
       oauthFlowDeadlineSourceUrl: null,
       lastSignupCode: null,
@@ -4132,6 +4309,7 @@ function getDownstreamStateResets(step) {
       lastEmailTimestamp: null,
       signupVerificationRequestedAt: null,
       loginVerificationRequestedAt: null,
+      loginVerificationBypassed: false,
       oauthFlowDeadlineAt: null,
       oauthFlowDeadlineSourceUrl: null,
       lastSignupCode: null,
@@ -4144,6 +4322,7 @@ function getDownstreamStateResets(step) {
       lastEmailTimestamp: null,
       signupVerificationRequestedAt: null,
       loginVerificationRequestedAt: null,
+      loginVerificationBypassed: false,
       oauthFlowDeadlineAt: null,
       oauthFlowDeadlineSourceUrl: null,
       lastSignupCode: null,
@@ -4155,6 +4334,7 @@ function getDownstreamStateResets(step) {
     return {
       lastLoginCode: null,
       loginVerificationRequestedAt: null,
+      loginVerificationBypassed: false,
       oauthFlowDeadlineAt: null,
       oauthFlowDeadlineSourceUrl: null,
       localhostUrl: null,
@@ -4921,13 +5101,17 @@ async function handleStepData(step, payload) {
         await setState({ signupVerificationRequestedAt: payload.signupVerificationRequestedAt });
       }
       if (payload.loginVerificationRequestedAt) {
-        await setState({ loginVerificationRequestedAt: payload.loginVerificationRequestedAt });
+        await setState({
+          loginVerificationRequestedAt: payload.loginVerificationRequestedAt,
+          loginVerificationBypassed: false,
+        });
       }
       break;
     case 7:
-      if (payload.loginVerificationRequestedAt) {
-        await setState({ loginVerificationRequestedAt: payload.loginVerificationRequestedAt });
-      }
+      await setState({
+        loginVerificationRequestedAt: payload.loginVerificationRequestedAt || null,
+        loginVerificationBypassed: Boolean(payload.loginVerificationBypassed),
+      });
       break;
     case 4:
       await setState({
@@ -4939,6 +5123,7 @@ async function handleStepData(step, payload) {
       await setState({
         lastEmailTimestamp: payload.emailTimestamp || null,
         loginVerificationRequestedAt: null,
+        loginVerificationBypassed: Boolean(payload.loginVerificationBypassed),
       });
       break;
     case 9:
@@ -4985,6 +5170,9 @@ async function handleStepData(step, payload) {
       await finalizeIcloudAliasAfterSuccessfulFlow(latestState);
       if (shouldUseCustomRegistrationEmail(latestState) && latestState.email) {
         await setEmailStateSilently(null);
+      }
+      if (typeof finalizeSuccessfulRegistrationArtifacts === 'function') {
+        await finalizeSuccessfulRegistrationArtifacts(latestState);
       }
       break;
     }
@@ -5215,6 +5403,15 @@ async function requestStop(options = {}) {
   const runningSteps = getRunningSteps(state.stepStatuses);
   const inferredStopStep = inferStoppedRecordStep(state);
   const timerPlan = getPendingAutoRunTimerPlan(state);
+
+  if (typeof phoneVerifyCancel === 'function') {
+    try {
+      await phoneVerifyCancel('STOP_FLOW');
+    } catch (error) {
+      const logPrefix = typeof LOG_PREFIX !== 'undefined' ? LOG_PREFIX : '[MultiPage:bg]';
+      console.warn(logPrefix, 'Failed to cancel HeroSMS activation on stop:', error?.message || error);
+    }
+  }
 
   if (timerPlan?.kind === AUTO_RUN_TIMER_KIND_SCHEDULED_START && !autoRunActive) {
     await cancelScheduledAutoRun({
@@ -5465,7 +5662,9 @@ let autoRunSessionId = 0;
 let autoRunSessionSeed = 0;
 const EMAIL_FETCH_MAX_ATTEMPTS = 5;
 const VERIFICATION_POLL_MAX_ROUNDS = 5;
-const STANDARD_MAIL_VERIFICATION_RESEND_INTERVAL_MS = 25000;
+// iCloud 别名转发链 OpenAI → iCloud → 真实邮箱 实测延迟 30-60s，把重发间隔从 25s 拉长到 60s
+// 避免在第一封邮件到达前就触发不必要的重发。
+const STANDARD_MAIL_VERIFICATION_RESEND_INTERVAL_MS = 60000;
 const MAIL_2925_VERIFICATION_MAX_ATTEMPTS = 15;
 const MAIL_2925_VERIFICATION_INTERVAL_MS = 15000;
 const AUTO_STEP_DELAYS = {
@@ -5497,6 +5696,275 @@ const contributionOAuthManager = self.MultiPageBackgroundContributionOAuth?.crea
   setState,
 });
 contributionOAuthManager?.ensureCallbackListeners?.();
+
+const accountsExporter = chrome.downloads?.download
+  ? self.MultiPageAccountsExporter?.createAccountsExporter?.({
+    chromeStorage: chrome.storage.local,
+    chromeDownloads: chrome.downloads,
+  })
+  : null;
+let phoneVerifyFlow = null;
+let phoneVerifyRequestNumberPromise = null;
+let phoneVerifyGeneration = 0;
+
+function getHerosmsCountrySequence(state = {}, optionsOrPreference = undefined) {
+  const flowModule = self.MultiPagePhoneVerifyFlow || {};
+  const countryCodes = flowModule.COUNTRY_CODES || self.MultiPageHerosmsClient?.COUNTRY_CODES || {};
+  const defaultSequence = (flowModule.DEFAULT_COUNTRY_SEQUENCE
+    || [countryCodes.CHILE, countryCodes.BRAZIL, countryCodes.UK]).filter(Number.isFinite);
+
+  const optionOverride = optionsOrPreference && typeof optionsOrPreference === 'object'
+    ? optionsOrPreference
+    : null;
+  const countriesOverride = optionOverride?.countries;
+  const preferenceOverride = optionOverride
+    ? optionOverride.countryPreference
+    : optionsOrPreference;
+
+  const candidates = Array.isArray(countriesOverride) ? countriesOverride : state.herosmsCountries;
+  if (Array.isArray(candidates)) {
+    const sequence = normalizeHerosmsCountries(candidates)
+      .filter(entry => entry.enabled !== false)
+      .map(entry => entry.code);
+    if (sequence.length) return sequence;
+  }
+
+  const preference = normalizeHerosmsCountryPreference(preferenceOverride ?? state.herosmsCountryPreference);
+  const preferredCountry = {
+    chile: countryCodes.CHILE,
+    brazil: countryCodes.BRAZIL,
+    uk: countryCodes.UK,
+  }[preference];
+  if (!preferredCountry) return defaultSequence.slice();
+  return [preferredCountry, ...defaultSequence.filter(country => country !== preferredCountry)];
+}
+
+function createConfiguredHerosmsClient(state = {}) {
+  const apiKey = String(state.herosmsApiKey || '').trim();
+  if (!apiKey) {
+    throw new Error('请先在侧边栏配置 HeroSMS API Key。');
+  }
+  const clientFactory = self.MultiPageHerosmsClient?.createHerosmsClient;
+  if (typeof clientFactory !== 'function') {
+    throw new Error('HeroSMS 客户端模块未加载。');
+  }
+  return clientFactory({ apiKey });
+}
+
+async function checkHerosmsBalance() {
+  const state = await getState();
+  const client = createConfiguredHerosmsClient(state);
+  const result = await client.getBalance();
+  await addLog(`HeroSMS 余额：${result.balance}`, 'info');
+  return { ok: true, ...result };
+}
+
+function createConfiguredPhoneVerifyFlow(state = {}, options = {}) {
+  const flowFactory = self.MultiPagePhoneVerifyFlow?.createPhoneVerifyFlow;
+  if (typeof flowFactory !== 'function') {
+    throw new Error('手机号验证流程模块未加载。');
+  }
+  const maxPricePerNumber = options.maxPricePerNumber !== undefined
+    ? normalizeHerosmsMaxPricePerNumber(options.maxPricePerNumber)
+    : normalizeHerosmsMaxPricePerNumber(state.herosmsMaxPricePerNumber);
+
+  // configPollIntervalMs controls per-round timeout (interval × count = round budget).
+  // Internal HeroSMS check frequency is capped at 5 s so the code is detected quickly
+  // even when the user configures a long interval for timing purposes.
+  const configPollIntervalMs = Number(state.signupVerificationPollIntervalMs) || 5000;
+  const pollMaxAttempts = Number(state.signupVerificationPollMaxAttempts) || 12;
+  const timeoutMs = configPollIntervalMs * pollMaxAttempts;
+  const pollIntervalMs = Math.min(configPollIntervalMs, 5000);
+  const maxResendAttempts = Number(state.herosmsMaxResendAttempts) || Number(state.verificationResendCount) || 2;
+
+  return flowFactory({
+    herosmsClient: createConfiguredHerosmsClient(state),
+    countrySequence: getHerosmsCountrySequence(state, {
+      countries: options.countries,
+      countryPreference: options.countryPreference,
+    }),
+    maxPricePerNumber,
+    timeoutMs,
+    pollIntervalMs,
+    maxResendAttempts,
+    logger: {
+      info:  (msg, data) => addLog(`[PhoneVerifyFlow] ${msg}${data ? ` ${JSON.stringify(data)}` : ''}`, 'info'),
+      warn:  (msg, data) => addLog(`[PhoneVerifyFlow] ${msg}${data ? ` ${JSON.stringify(data)}` : ''}`, 'warn'),
+      error: (msg, data) => addLog(`[PhoneVerifyFlow] ${msg}${data ? ` ${JSON.stringify(data)}` : ''}`, 'error'),
+    },
+  });
+}
+
+async function setCurrentPhoneActivation(activation) {
+  const currentPhoneActivation = activation ? { ...activation } : null;
+  await setState({ currentPhoneActivation });
+  broadcastDataUpdate({ currentPhoneActivation });
+  return currentPhoneActivation;
+}
+
+async function phoneVerifyRequestNumber(options = {}) {
+  if (phoneVerifyRequestNumberPromise) {
+    return phoneVerifyRequestNumberPromise;
+  }
+
+  const requestPromise = (async () => {
+    if (phoneVerifyFlow) {
+      await phoneVerifyCancel('REPLACED_BY_REQUEST_NUMBER');
+    }
+    const generation = phoneVerifyGeneration + 1;
+    phoneVerifyGeneration = generation;
+    const state = await getState();
+    const nextFlow = createConfiguredPhoneVerifyFlow(state, options);
+    phoneVerifyFlow = nextFlow;
+    const activation = await nextFlow.requestNumber();
+    if (phoneVerifyFlow !== nextFlow || phoneVerifyGeneration !== generation) {
+      await nextFlow.cancel('REQUEST_SUPERSEDED');
+      return { ok: false, requiresNewNumber: true, reason: 'REQUEST_SUPERSEDED', activation: null };
+    }
+    await setCurrentPhoneActivation(activation);
+    await addLog(`HeroSMS 已获取手机号：${activation.phone}（国家 ${activation.country}）`, 'ok');
+    return { ok: true, activation };
+  })();
+  phoneVerifyRequestNumberPromise = requestPromise;
+
+  try {
+    return await requestPromise;
+  } finally {
+    if (phoneVerifyRequestNumberPromise === requestPromise) {
+      phoneVerifyRequestNumberPromise = null;
+    }
+  }
+}
+
+function ensurePhoneVerifyFlow() {
+  if (!phoneVerifyFlow) {
+    throw new Error('当前没有可用的 HeroSMS 手机号验证流程，请先获取手机号。');
+  }
+  return phoneVerifyFlow;
+}
+
+function isPhoneNewNumberRequiredError(error) {
+  return error && (error.code === 'NEW_NUMBER_REQUIRED' || error.code === 'POLL_TIMEOUT' || error.name === 'NewNumberRequiredError' || error.name === 'PollTimeoutError');
+}
+
+async function phoneVerifyPollForCode() {
+  const flow = ensurePhoneVerifyFlow();
+  try {
+    const code = await flow.pollForCode();
+    const activation = flow.getCurrentActivation();
+    await setCurrentPhoneActivation(activation);
+    return { ok: true, code, activation };
+  } catch (error) {
+    const activation = flow.getCurrentActivation();
+    await setCurrentPhoneActivation(activation);
+    if (isPhoneNewNumberRequiredError(error)) {
+      return {
+        ok: false,
+        requiresNewNumber: true,
+        reason: error.reason || error.code || error.message,
+        activation,
+      };
+    }
+    throw error;
+  }
+}
+
+async function phoneVerifyResendCurrentNumber() {
+  const flow = ensurePhoneVerifyFlow();
+  const state = await getState();
+  const maxResendAttempts = Number(state.herosmsMaxResendAttempts) || Number(state.verificationResendCount) || 2;
+  const result = await flow.resendCurrentNumber();
+  await setCurrentPhoneActivation(flow.getCurrentActivation());
+  return { ok: true, ...result, maxResendAttempts, activation: flow.getCurrentActivation() };
+}
+
+async function phoneVerifyReplaceNumber(options = {}) {
+  if (!phoneVerifyFlow) {
+    return phoneVerifyRequestNumber(options);
+  }
+  const activation = await phoneVerifyFlow.replaceNumber(options.reason || 'replace_number');
+  await setCurrentPhoneActivation(activation);
+  await addLog(`HeroSMS 已更换手机号：${activation.phone}（国家 ${activation.country}）`, 'warn');
+  return { ok: true, activation };
+}
+
+async function phoneVerifyCancel(reason = 'cancel') {
+  phoneVerifyGeneration += 1;
+  if (!phoneVerifyFlow) {
+    await setCurrentPhoneActivation(null);
+    return { ok: true, cancelled: false };
+  }
+  const flow = phoneVerifyFlow;
+  try {
+    const result = await flow.cancel(reason);
+    if (phoneVerifyFlow === flow) phoneVerifyFlow = null;
+    await setCurrentPhoneActivation(null);
+    return { ok: true, ...result };
+  } catch (error) {
+    if (phoneVerifyFlow === flow) {
+      await setCurrentPhoneActivation(flow.getCurrentActivation());
+    }
+    throw error;
+  }
+}
+
+async function phoneVerifyComplete() {
+  if (!phoneVerifyFlow) {
+    await setCurrentPhoneActivation(null);
+    return { ok: true, completed: false };
+  }
+  const result = await phoneVerifyFlow.complete();
+  phoneVerifyFlow = null;
+  await setCurrentPhoneActivation(null);
+  return { ok: true, ...result };
+}
+
+async function phoneVerifyStatus() {
+  const activation = phoneVerifyFlow?.getCurrentActivation?.() || (await getState()).currentPhoneActivation || null;
+  return { ok: true, activation };
+}
+
+async function appendSuccessfulAccountToAccountsFile(stateOverride = null) {
+  if (!accountsExporter?.appendAccount) {
+    await addLog('accounts.txt 导出模块未加载，已跳过账号文件写入。', 'warn');
+    return null;
+  }
+  const state = stateOverride || await getState();
+  const email = String(state.email || '').trim();
+  const password = String(state.password || state.customPassword || '').trim();
+  if (!email || !password) {
+    await addLog('注册成功但缺少邮箱或密码，已跳过 accounts.txt 写入。', 'warn');
+    return null;
+  }
+  const result = await accountsExporter.appendAccount({ email, password });
+  await addLog(`已写入 Downloads/accounts.txt：${email}`, 'ok');
+  return result;
+}
+
+async function reexportAccountsFile() {
+  if (!accountsExporter?.reexportAll) {
+    throw new Error('accounts.txt 导出模块未加载。');
+  }
+  const result = await accountsExporter.reexportAll();
+  await addLog('已重新导出 Downloads/accounts.txt。', 'ok');
+  return { ok: true, ...result };
+}
+
+async function finalizeSuccessfulRegistrationArtifacts(stateOverride = null) {
+  try {
+    const completeResult = await phoneVerifyComplete();
+    if (completeResult.completed) {
+      await addLog('HeroSMS 激活已标记为完成。', 'ok');
+    }
+  } catch (error) {
+    await addLog(`HeroSMS 激活完成状态更新失败：${error?.message || error}`, 'warn');
+  }
+  try {
+    await appendSuccessfulAccountToAccountsFile(stateOverride);
+  } catch (error) {
+    await addLog(`accounts.txt 写入失败：${error?.message || error}`, 'error');
+  }
+}
 
 async function broadcastAccountRunHistoryUpdate() {
   if (!accountRunHistoryHelpers?.getPersistedAccountRunHistory) {
@@ -5572,6 +6040,7 @@ const autoRunController = self.MultiPageBackgroundAutoRunController?.createAutoR
   launchAutoRunTimerPlan,
   normalizeAutoRunFallbackThreadIntervalMinutes,
   persistAutoRunTimerPlan,
+  phoneVerifyCancel,
   resetState,
   runAutoSequenceFromStep: (...args) => runAutoSequenceFromStep(...args),
   runtime: {
@@ -5830,13 +6299,49 @@ async function runAutoSequenceFromStep(startStep, context = {}) {
     await addLog(`=== 目标 ${targetRun}/${totalRuns} 轮：第 ${attemptRuns} 次尝试，阶段 1，打开官网并进入密码页 ===`, 'info');
   }
 
+  let restartFromStep1WithCurrentEmail = false;
+
   if (currentStartStep <= 1) {
     await executeStepAndWait(1, AUTO_STEP_DELAYS[1]);
   }
 
   if (currentStartStep <= 2) {
     await ensureAutoEmailReady(targetRun, totalRuns, attemptRuns);
-    await executeStepAndWait(2, AUTO_STEP_DELAYS[2]);
+    try {
+      await executeStepAndWait(2, AUTO_STEP_DELAYS[2]);
+    } catch (step2Err) {
+      await addLog(`[debug] step2 catch: smsRestart=${String(step2Err?.smsRestartRequired)}, msg=${String(step2Err?.message).slice(0, 60)}`, 'warn');
+      if (isStopError(step2Err)) throw step2Err;
+      if (step2Err?.smsRestartRequired) {
+        step4RestartCount += 1;
+        const preservedState = await getState();
+        const preservedEmail = String(preservedState.email || '').trim();
+        const preservedPassword = String(preservedState.password || '').trim();
+        const emailSuffix = preservedEmail ? `当前邮箱：${preservedEmail}；` : '';
+        await addLog(
+          `步骤 2：手机号被注册页拒绝，准备沿用当前邮箱回到步骤 1 重新开始（第 ${step4RestartCount} 次重开）。${emailSuffix}原因：${getErrorMessage(step2Err)}`,
+          'warn'
+        );
+        await invalidateDownstreamAfterStepRestart(1, {
+          logLabel: `步骤 2 手机号被拒绝后准备回到步骤 1 沿用当前邮箱重试（第 ${step4RestartCount} 次重开）`,
+        });
+        const restorePayload = {};
+        if (preservedEmail) restorePayload.email = preservedEmail;
+        if (preservedPassword) restorePayload.password = preservedPassword;
+        if (Object.keys(restorePayload).length) {
+          await setState(restorePayload);
+        }
+        currentStartStep = 1;
+        continueCurrentAttempt = true;
+        restartFromStep1WithCurrentEmail = true;
+      } else {
+        throw step2Err;
+      }
+    }
+  }
+
+  if (restartFromStep1WithCurrentEmail) {
+    continue;
   }
 
   if (currentStartStep <= 3) {
@@ -5862,7 +6367,6 @@ async function runAutoSequenceFromStep(startStep, context = {}) {
     await chrome.tabs.update(signupTabId, { active: true });
   }
 
-  let restartFromStep1WithCurrentEmail = false;
   let step = Math.max(currentStartStep, 4);
   while (step <= LAST_STEP_ID) {
     try {
@@ -5874,7 +6378,7 @@ async function runAutoSequenceFromStep(startStep, context = {}) {
         throw err;
       }
 
-      if (step === 4) {
+      if (step === 4 || err?.smsRestartRequired) {
         if (isSignupUserAlreadyExistsFailure(err)) {
           throw err;
         }
@@ -6114,6 +6618,7 @@ const verificationFlowHelpers = self.MultiPageBackgroundVerificationFlow?.create
 });
 const step1Executor = self.MultiPageBackgroundStep1?.createStep1Executor({
   addLog,
+  clearChatGptSessionCookies,
   completeStepFromBackground,
   openSignupEntryTab,
 });
@@ -6126,8 +6631,11 @@ const step2Executor = self.MultiPageBackgroundStep2?.createStep2Executor({
   ensureSignupPostEmailPageReadyInTab,
   getTabId,
   isTabAlive,
+  phoneVerifyRequestNumber,
+  phoneVerifyReplaceNumber,
   resolveSignupEmailForFlow,
   sendToContentScriptResilient,
+  setState,
   SIGNUP_PAGE_INJECT_FILES,
 });
 const step3Executor = self.MultiPageBackgroundStep3?.createStep3Executor({
@@ -6153,6 +6661,8 @@ const step4Executor = self.MultiPageBackgroundStep4?.createStep4Executor({
   isTabAlive,
   LUCKMAIL_PROVIDER,
   CLOUDFLARE_TEMP_EMAIL_PROVIDER,
+  phoneVerifyPollForCode,
+  phoneVerifyResendCurrentNumber,
   resolveVerificationStep: verificationFlowHelpers.resolveVerificationStep,
   reuseOrCreateTab,
   sendToContentScriptResilient,
@@ -6168,7 +6678,6 @@ const step5Executor = self.MultiPageBackgroundStep5?.createStep5Executor({
 });
 const step6Executor = self.MultiPageBackgroundStep6?.createStep6Executor({
   completeStepFromBackground,
-  runPreStep6CookieCleanup,
 });
 const step7Executor = self.MultiPageBackgroundStep7?.createStep7Executor({
   addLog,
@@ -6207,6 +6716,7 @@ const step8Executor = self.MultiPageBackgroundStep8?.createStep8Executor({
   rerunStep7ForStep8Recovery: (...args) => rerunStep7ForStep8Recovery(...args),
   reuseOrCreateTab,
   setState,
+  completeStepFromBackground,
   shouldUseCustomRegistrationEmail,
   sleepWithStop,
   STANDARD_MAIL_VERIFICATION_RESEND_INTERVAL_MS,
@@ -6253,12 +6763,15 @@ const messageRouter = self.MultiPageBackgroundMessageRouter?.createMessageRouter
   buildPersistentSettingsPayload,
   broadcastDataUpdate,
   cancelScheduledAutoRun,
+  checkHerosmsBalance,
+  emailBindForCpaLogin,
   checkIcloudSession,
   clearAccountRunHistory: (...args) => clearAndBroadcastAccountRunHistory(...args),
   deleteAccountRunHistoryRecords: (...args) => deleteAndBroadcastAccountRunHistoryRecords(...args),
   clearAutoRunTimerAlarm,
   clearLuckmailRuntimeState,
   clearStopRequest,
+  clickWithDebugger,
   closeLocalhostCallbackTabs,
   closeTabsByUrlPrefix,
   deleteHotmailAccount,
@@ -6282,6 +6795,7 @@ const messageRouter = self.MultiPageBackgroundMessageRouter?.createMessageRouter
     );
   },
   finalizeIcloudAliasAfterSuccessfulFlow,
+  finalizeSuccessfulRegistrationArtifacts,
   findHotmailAccount,
   flushCommand,
   getCurrentLuckmailPurchase,
@@ -6308,10 +6822,18 @@ const messageRouter = self.MultiPageBackgroundMessageRouter?.createMessageRouter
   notifyStepComplete,
   notifyStepError,
   patchHotmailAccount,
+  phoneVerifyCancel,
+  phoneVerifyComplete,
+  phoneVerifyPollForCode,
+  phoneVerifyReplaceNumber,
+  phoneVerifyRequestNumber,
+  phoneVerifyResendCurrentNumber,
+  phoneVerifyStatus,
   registerTab,
   requestStop,
   resetState,
   resumeAutoRun,
+  reexportAccountsFile,
   scheduleAutoRun,
   selectLuckmailPurchase,
   setCurrentHotmailAccount,
@@ -6326,6 +6848,7 @@ const messageRouter = self.MultiPageBackgroundMessageRouter?.createMessageRouter
   setPersistentSettings,
   setState,
   setStepStatus,
+  shouldUseCustomRegistrationEmail,
   skipAutoRunCountdown,
   skipStep,
   startContributionFlow: (...args) => contributionOAuthManager?.startContributionFlow?.(...args),
@@ -6373,6 +6896,13 @@ async function ensureSignupPostEmailPageReadyInTab(tabId, step = 2, options = {}
 
 async function resolveSignupEmailForFlow(state) {
   return signupFlowHelpers.resolveSignupEmailForFlow(state);
+}
+
+async function emailBindForCpaLogin() {
+  const state = await getState();
+  const resolvedEmail = await signupFlowHelpers.resolveSignupEmailForFlow(state);
+  await setEmailState(resolvedEmail);
+  return { ok: true, email: resolvedEmail };
 }
 
 // ============================================================
@@ -6619,17 +7149,15 @@ async function removeCookieDirectly(cookie) {
   }
 }
 
-async function runPreStep6CookieCleanup() {
-  await addLog(
-    `步骤 6：开始前等待 ${Math.round(STEP6_PRE_LOGIN_COOKIE_CLEAR_DELAY_MS / 1000)} 秒，然后直接删除 ChatGPT / OpenAI cookies...`,
-    'info'
-  );
-
-  await sleepWithStop(STEP6_PRE_LOGIN_COOKIE_CLEAR_DELAY_MS);
+async function clearChatGptSessionCookies(options = {}) {
+  const { logLabel = '', silent = false } = options;
+  const prefix = logLabel ? `${logLabel}：` : '';
 
   if (!chrome.cookies?.getAll || !chrome.cookies?.remove) {
-    await addLog('步骤 6：当前浏览器不支持 cookies API，无法直接删除 cookies。', 'warn');
-    return;
+    if (!silent) {
+      await addLog(`${prefix}当前浏览器不支持 cookies API，无法直接删除 cookies。`, 'warn');
+    }
+    return { removed: 0, supported: false };
   }
 
   const cookies = await collectCookiesForPreLoginCleanup();
@@ -6649,11 +7177,28 @@ async function runPreStep6CookieCleanup() {
         origins: PRE_LOGIN_COOKIE_CLEAR_ORIGINS,
       });
     } catch (err) {
-      await addLog(`步骤 6：browsingData 补扫 cookies 失败：${getErrorMessage(err)}`, 'warn');
+      if (!silent) {
+        await addLog(`${prefix}browsingData 补扫 cookies 失败：${getErrorMessage(err)}`, 'warn');
+      }
     }
   }
 
-  await addLog(`步骤 6：已直接删除 ${removedCount} 个 ChatGPT / OpenAI cookies，准备继续获取链接并登录。`, 'ok');
+  return { removed: removedCount, supported: true };
+}
+
+async function runPreStep6CookieCleanup() {
+  await addLog(
+    `步骤 6：开始前等待 ${Math.round(STEP6_PRE_LOGIN_COOKIE_CLEAR_DELAY_MS / 1000)} 秒，然后直接删除 ChatGPT / OpenAI cookies...`,
+    'info'
+  );
+
+  await sleepWithStop(STEP6_PRE_LOGIN_COOKIE_CLEAR_DELAY_MS);
+
+  const result = await clearChatGptSessionCookies({ logLabel: '步骤 6' });
+  if (!result.supported) {
+    return;
+  }
+  await addLog(`步骤 6：已直接删除 ${result.removed} 个 ChatGPT / OpenAI cookies，准备继续获取链接并登录。`, 'ok');
 }
 
 // ============================================================
@@ -6863,7 +7408,7 @@ async function getLoginAuthStateFromContent(options = {}) {
 
 async function ensureStep8VerificationPageReady(options = {}) {
   const pageState = await getLoginAuthStateFromContent(options);
-  if (pageState.state === 'verification_page') {
+  if (pageState.state === 'verification_page' || pageState.state === 'oauth_consent_page' || pageState.consentReady) {
     return pageState;
   }
 
@@ -6877,8 +7422,7 @@ async function ensureStep8VerificationPageReady(options = {}) {
   }
 
   if (pageState.state === 'add_phone_page') {
-    const urlPart = pageState.url ? ` URL: ${pageState.url}` : '';
-    throw new Error(`步骤 8：当前认证页进入手机号页面，当前流程无法继续自动授权。${urlPart}`.trim());
+    return pageState;
   }
 
   const stateLabel = getLoginAuthStateLabel(pageState.state);

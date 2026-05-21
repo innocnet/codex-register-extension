@@ -869,6 +869,77 @@ header {
   margin-top: 10px;
 }
 
+.herosms-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg-base) 84%, transparent);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.herosms-country-row-wrapper {
+  align-items: flex-start;
+}
+
+.herosms-country-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.herosms-country-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--bg-base) 92%, transparent);
+  cursor: grab;
+  user-select: none;
+}
+
+.herosms-country-row.is-dragging {
+  opacity: 0.45;
+  cursor: grabbing;
+}
+
+.herosms-country-row.is-dragover-before {
+  box-shadow: inset 0 2px 0 var(--accent, #2680eb);
+}
+
+.herosms-country-row.is-dragover-after {
+  box-shadow: inset 0 -2px 0 var(--accent, #2680eb);
+}
+
+.herosms-country-drag {
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
+.herosms-country-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.herosms-country-toggle .herosms-country-label {
+  font-size: 13px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .luckmail-manager-card {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);

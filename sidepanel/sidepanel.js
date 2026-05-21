@@ -122,6 +122,7 @@ const btnIcloudRefresh = document.getElementById('btn-icloud-refresh');
 const btnIcloudDeleteUsed = document.getElementById('btn-icloud-delete-used');
 const selectIcloudHostPreference = document.getElementById('select-icloud-host-preference');
 const checkboxAutoDeleteIcloud = document.getElementById('checkbox-auto-delete-icloud');
+const inputIcloudAliasLabelPattern = document.getElementById('input-icloud-alias-label-pattern');
 const inputIcloudSearch = document.getElementById('input-icloud-search');
 const selectIcloudFilter = document.getElementById('select-icloud-filter');
 const checkboxIcloudSelectAll = document.getElementById('checkbox-icloud-select-all');
@@ -154,6 +155,12 @@ const inputLuckmailApiKey = document.getElementById('input-luckmail-api-key');
 const inputLuckmailBaseUrl = document.getElementById('input-luckmail-base-url');
 const selectLuckmailEmailType = document.getElementById('select-luckmail-email-type');
 const inputLuckmailDomain = document.getElementById('input-luckmail-domain');
+const inputHerosmsApiKey = document.getElementById('input-herosms-api-key');
+const herosmsCountryList = document.getElementById('herosms-country-list');
+const inputHerosmsMaxPricePerNumber = document.getElementById('input-herosms-max-price-per-number');
+const btnHerosmsCheckBalance = document.getElementById('btn-herosms-check-balance');
+const herosmsBalanceStatus = document.getElementById('herosms-balance-status');
+const btnAccountsReexport = document.getElementById('btn-accounts-reexport');
 const btnLuckmailRefresh = document.getElementById('btn-luckmail-refresh');
 const btnLuckmailDisableUsed = document.getElementById('btn-luckmail-disable-used');
 const luckmailSummary = document.getElementById('luckmail-summary');
@@ -1426,6 +1433,7 @@ function collectSettingsPayload() {
     emailGenerator: selectEmailGenerator.value,
     autoDeleteUsedIcloudAlias: checkboxAutoDeleteIcloud?.checked,
     icloudHostPreference: selectIcloudHostPreference?.value || 'auto',
+    icloudAliasLabelPattern: normalizeIcloudAliasLabelPatternValue(inputIcloudAliasLabelPattern?.value),
     ...(contributionModeEnabled ? {} : {
       accountRunHistoryTextEnabled: Boolean(inputAccountRunHistoryTextEnabled?.checked),
       accountRunHistoryHelperBaseUrl: normalizeAccountRunHistoryHelperBaseUrlValue(inputAccountRunHistoryHelperBaseUrl?.value),
@@ -1440,6 +1448,9 @@ function collectSettingsPayload() {
     luckmailBaseUrl: normalizeLuckmailBaseUrl(inputLuckmailBaseUrl.value),
     luckmailEmailType: normalizeLuckmailEmailType(selectLuckmailEmailType.value),
     luckmailDomain: inputLuckmailDomain.value.trim(),
+    herosmsApiKey: inputHerosmsApiKey?.value || '',
+    herosmsCountries: collectHerosmsCountriesFromUi(),
+    herosmsMaxPricePerNumber: normalizeHerosmsMaxPricePerNumber(inputHerosmsMaxPricePerNumber?.value),
     cloudflareDomain: selectedCloudflareDomain,
     cloudflareDomains: domains,
     cloudflareTempEmailBaseUrl: normalizeCloudflareTempEmailBaseUrlValue(inputTempEmailBaseUrl.value),
@@ -1830,7 +1841,7 @@ function applySettingsState(state) {
     } else if (restoredEmailGenerator === 'cloudflare-temp-email') {
       selectEmailGenerator.value = 'cloudflare-temp-email';
     } else {
-      selectEmailGenerator.value = 'duck';
+      selectEmailGenerator.value = 'icloud';
     }
   }
   if (selectIcloudHostPreference) {
@@ -1840,6 +1851,9 @@ function applySettingsState(state) {
   }
   if (checkboxAutoDeleteIcloud) {
     checkboxAutoDeleteIcloud.checked = Boolean(state?.autoDeleteUsedIcloudAlias);
+  }
+  if (inputIcloudAliasLabelPattern && document.activeElement !== inputIcloudAliasLabelPattern) {
+    inputIcloudAliasLabelPattern.value = normalizeIcloudAliasLabelPatternValue(state?.icloudAliasLabelPattern);
   }
   if (inputAccountRunHistoryTextEnabled) {
     inputAccountRunHistoryTextEnabled.checked = Boolean(state?.accountRunHistoryTextEnabled);
@@ -1863,6 +1877,13 @@ function applySettingsState(state) {
   inputLuckmailBaseUrl.value = normalizeLuckmailBaseUrl(state?.luckmailBaseUrl);
   selectLuckmailEmailType.value = normalizeLuckmailEmailType(state?.luckmailEmailType);
   inputLuckmailDomain.value = state?.luckmailDomain || '';
+  if (inputHerosmsApiKey && document.activeElement !== inputHerosmsApiKey) {
+    inputHerosmsApiKey.value = state?.herosmsApiKey || '';
+  }
+  renderHerosmsCountryList(state);
+  if (inputHerosmsMaxPricePerNumber && document.activeElement !== inputHerosmsMaxPricePerNumber) {
+    inputHerosmsMaxPricePerNumber.value = String(normalizeHerosmsMaxPricePerNumber(state?.herosmsMaxPricePerNumber));
+  }
   inputTempEmailBaseUrl.value = state?.cloudflareTempEmailBaseUrl || '';
   inputTempEmailAdminAuth.value = state?.cloudflareTempEmailAdminAuth || '';
   inputTempEmailCustomAuth.value = state?.cloudflareTempEmailCustomAuth || '';
@@ -2250,6 +2271,219 @@ function normalizeLuckmailEmailType(value = '') {
     : DEFAULT_LUCKMAIL_EMAIL_TYPE;
 }
 
+function normalizeHerosmsCountryPreference(value = '') {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'chile' || normalized === 'cl' || normalized === '151') return 'chile';
+  if (normalized === 'brazil' || normalized === 'br' || normalized === '73') return 'brazil';
+  if (normalized === 'uk' || normalized === 'england' || normalized === 'gb' || normalized === '16') return 'uk';
+  return 'auto';
+}
+
+const HEROSMS_COUNTRY_LABELS = {
+  151: '智利',
+  73: '巴西',
+  16: '英国',
+  0: '俄罗斯',
+  6: '印度尼西亚',
+  22: '印度',
+};
+
+const HEROSMS_COUNTRY_DEFAULTS = [
+  { code: 151, enabled: true },
+  { code: 73, enabled: true },
+  { code: 16, enabled: true },
+  { code: 0, enabled: false },
+  { code: 6, enabled: false },
+  { code: 22, enabled: false },
+];
+
+function getHerosmsCountryLabel(code) {
+  return HEROSMS_COUNTRY_LABELS[code] || `国家 ${code}`;
+}
+
+function normalizeHerosmsCountries(value) {
+  const source = Array.isArray(value) ? value : null;
+  if (!source) {
+    return HEROSMS_COUNTRY_DEFAULTS.map(entry => ({ code: entry.code, enabled: Boolean(entry.enabled) }));
+  }
+  const seen = new Set();
+  const normalized = [];
+  for (const entry of source) {
+    if (entry === null || entry === undefined) continue;
+    const code = Number(typeof entry === 'object' ? entry.code : entry);
+    if (!Number.isFinite(code) || code < 0) continue;
+    if (seen.has(code)) continue;
+    seen.add(code);
+    const enabled = typeof entry === 'object' && entry.enabled !== undefined
+      ? Boolean(entry.enabled)
+      : true;
+    normalized.push({ code: Math.floor(code), enabled });
+  }
+  if (!normalized.length) {
+    return HEROSMS_COUNTRY_DEFAULTS.map(entry => ({ code: entry.code, enabled: Boolean(entry.enabled) }));
+  }
+  return normalized;
+}
+
+function deriveHerosmsCountriesFromState(state) {
+  if (state && Array.isArray(state.herosmsCountries) && state.herosmsCountries.length) {
+    return normalizeHerosmsCountries(state.herosmsCountries);
+  }
+  const preference = normalizeHerosmsCountryPreference(state?.herosmsCountryPreference);
+  const codeByPreference = { chile: 151, brazil: 73, uk: 16 };
+  const preferred = codeByPreference[preference];
+  const defaults = HEROSMS_COUNTRY_DEFAULTS.map(entry => ({ code: entry.code, enabled: Boolean(entry.enabled) }));
+  if (!preferred) return defaults;
+  const moved = defaults.filter(entry => entry.code !== preferred);
+  return [{ code: preferred, enabled: true }, ...moved];
+}
+
+function ensureAllKnownHerosmsCountries(countries) {
+  const result = countries.map(entry => ({ code: entry.code, enabled: Boolean(entry.enabled) }));
+  const present = new Set(result.map(entry => entry.code));
+  for (const fallback of HEROSMS_COUNTRY_DEFAULTS) {
+    if (!present.has(fallback.code)) {
+      result.push({ code: fallback.code, enabled: false });
+    }
+  }
+  return result;
+}
+
+let herosmsCountryDragSource = null;
+
+function clearHerosmsCountryDragMarkers() {
+  if (!herosmsCountryList) return;
+  herosmsCountryList.querySelectorAll('.is-dragover-before, .is-dragover-after').forEach((el) => {
+    el.classList.remove('is-dragover-before', 'is-dragover-after');
+  });
+}
+
+function buildHerosmsCountryRow(entry) {
+  const row = document.createElement('div');
+  row.className = 'herosms-country-row';
+  row.draggable = true;
+  row.dataset.countryCode = String(entry.code);
+  row.setAttribute('role', 'listitem');
+
+  const drag = document.createElement('span');
+  drag.className = 'herosms-country-drag';
+  drag.setAttribute('aria-hidden', 'true');
+  drag.textContent = '⋮⋮';
+  row.appendChild(drag);
+
+  const label = document.createElement('label');
+  label.className = 'herosms-country-toggle';
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.className = 'herosms-country-enabled';
+  checkbox.checked = Boolean(entry.enabled);
+  const text = document.createElement('span');
+  text.className = 'herosms-country-label';
+  text.textContent = `${getHerosmsCountryLabel(entry.code)} (${entry.code})`;
+  label.appendChild(checkbox);
+  label.appendChild(text);
+  row.appendChild(label);
+
+  checkbox.addEventListener('change', () => {
+    markSettingsDirty(true);
+    saveSettings({ silent: true }).catch(() => { });
+  });
+
+  row.addEventListener('dragstart', (event) => {
+    herosmsCountryDragSource = row;
+    row.classList.add('is-dragging');
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = 'move';
+      try { event.dataTransfer.setData('text/plain', row.dataset.countryCode); } catch (_) { /* firefox */ }
+    }
+  });
+
+  row.addEventListener('dragend', () => {
+    row.classList.remove('is-dragging');
+    clearHerosmsCountryDragMarkers();
+    if (herosmsCountryDragSource) {
+      herosmsCountryDragSource = null;
+      markSettingsDirty(true);
+      saveSettings({ silent: true }).catch(() => { });
+    }
+  });
+
+  row.addEventListener('dragover', (event) => {
+    if (!herosmsCountryDragSource || herosmsCountryDragSource === row) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    const rect = row.getBoundingClientRect();
+    const before = (event.clientY - rect.top) < rect.height / 2;
+    clearHerosmsCountryDragMarkers();
+    row.classList.add(before ? 'is-dragover-before' : 'is-dragover-after');
+  });
+
+  row.addEventListener('dragleave', () => {
+    row.classList.remove('is-dragover-before', 'is-dragover-after');
+  });
+
+  row.addEventListener('drop', (event) => {
+    if (!herosmsCountryDragSource || herosmsCountryDragSource === row) return;
+    event.preventDefault();
+    const rect = row.getBoundingClientRect();
+    const before = (event.clientY - rect.top) < rect.height / 2;
+    const reference = before ? row : row.nextSibling;
+    herosmsCountryList?.insertBefore(herosmsCountryDragSource, reference);
+    clearHerosmsCountryDragMarkers();
+  });
+
+  return row;
+}
+
+function renderHerosmsCountryList(state = latestState) {
+  if (!herosmsCountryList) return;
+  herosmsCountryList.innerHTML = '';
+  const derived = deriveHerosmsCountriesFromState(state);
+  const countries = ensureAllKnownHerosmsCountries(derived);
+  for (const entry of countries) {
+    herosmsCountryList.appendChild(buildHerosmsCountryRow(entry));
+  }
+}
+
+function collectHerosmsCountriesFromUi() {
+  if (!herosmsCountryList) {
+    return Array.isArray(latestState?.herosmsCountries) && latestState.herosmsCountries.length
+      ? normalizeHerosmsCountries(latestState.herosmsCountries)
+      : HEROSMS_COUNTRY_DEFAULTS.map(entry => ({ code: entry.code, enabled: Boolean(entry.enabled) }));
+  }
+  const rows = herosmsCountryList.querySelectorAll('.herosms-country-row');
+  const result = [];
+  rows.forEach((row) => {
+    const code = Number(row.dataset.countryCode);
+    if (!Number.isFinite(code)) return;
+    const enabled = Boolean(row.querySelector('.herosms-country-enabled')?.checked);
+    result.push({ code: Math.floor(code), enabled });
+  });
+  return result.length ? result : normalizeHerosmsCountries(latestState?.herosmsCountries);
+}
+
+const DEFAULT_HEROSMS_MAX_PRICE_PER_NUMBER = 0.5;
+
+const DEFAULT_ICLOUD_ALIAS_LABEL_PATTERN = '{seq:003}';
+
+function normalizeIcloudAliasLabelPatternValue(value) {
+  if (value === null || value === undefined) return DEFAULT_ICLOUD_ALIAS_LABEL_PATTERN;
+  const trimmed = String(value).trim();
+  if (!trimmed) return DEFAULT_ICLOUD_ALIAS_LABEL_PATTERN;
+  return trimmed.slice(0, 80);
+}
+
+function normalizeHerosmsMaxPricePerNumber(value) {
+  if (value === '' || value === null || value === undefined) {
+    return DEFAULT_HEROSMS_MAX_PRICE_PER_NUMBER;
+  }
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) {
+    return DEFAULT_HEROSMS_MAX_PRICE_PER_NUMBER;
+  }
+  return Math.round(numeric * 10000) / 10000;
+}
+
 function getSelectedEmailGenerator() {
   const generator = String(selectEmailGenerator.value || '').trim().toLowerCase();
   if (generator === 'custom' || generator === 'manual') {
@@ -2260,7 +2494,7 @@ function getSelectedEmailGenerator() {
   }
   if (generator === 'cloudflare') return 'cloudflare';
   if (generator === 'cloudflare-temp-email') return 'cloudflare-temp-email';
-  return 'duck';
+  return 'icloud';
 }
 
 function getEmailGeneratorUiCopy() {
@@ -2890,6 +3124,68 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+async function checkHerosmsBalanceFromPanel() {
+  const apiKey = String(inputHerosmsApiKey?.value || '').trim();
+  if (!apiKey) {
+    if (herosmsBalanceStatus) {
+      herosmsBalanceStatus.textContent = '请先填写 API Key';
+    }
+    showToast('请先填写 HeroSMS API Key。', 'warn');
+    inputHerosmsApiKey?.focus();
+    return;
+  }
+
+  if (btnHerosmsCheckBalance) {
+    btnHerosmsCheckBalance.disabled = true;
+  }
+  if (herosmsBalanceStatus) {
+    herosmsBalanceStatus.textContent = '查询中...';
+  }
+
+  try {
+    await saveSettings({ silent: true });
+    const response = await chrome.runtime.sendMessage({ type: 'HEROSMS_CHECK_BALANCE', source: 'sidepanel' });
+    if (response?.error) {
+      throw new Error(response.error);
+    }
+    const balance = String(response?.balance ?? '').trim() || '未知';
+    if (herosmsBalanceStatus) {
+      herosmsBalanceStatus.textContent = balance;
+    }
+    showToast(`HeroSMS 余额：${balance}`, 'success', 2200);
+  } catch (err) {
+    if (herosmsBalanceStatus) {
+      herosmsBalanceStatus.textContent = '查询失败';
+    }
+    showToast(`HeroSMS 余额查询失败：${err.message}`, 'error');
+  } finally {
+    if (btnHerosmsCheckBalance) {
+      btnHerosmsCheckBalance.disabled = false;
+    }
+  }
+}
+
+async function reexportAccountsFileFromPanel() {
+  if (btnAccountsReexport) {
+    btnAccountsReexport.disabled = true;
+  }
+
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'ACCOUNTS_REEXPORT', source: 'sidepanel' });
+    if (response?.error) {
+      throw new Error(response.error);
+    }
+    const saved = Number.isFinite(Number(response?.saved)) ? Number(response.saved) : 0;
+    showToast(`已导出 accounts.txt（${saved} 条）。`, 'success', 2200);
+  } catch (err) {
+    showToast(`导出 accounts.txt 失败：${err.message}`, 'error');
+  } finally {
+    if (btnAccountsReexport) {
+      btnAccountsReexport.disabled = false;
+    }
+  }
 }
 
 async function fetchGeneratedEmail(options = {}) {
@@ -3809,6 +4105,20 @@ btnClearLog.addEventListener('click', () => {
   logArea.innerHTML = '';
 });
 
+function flushPendingSettingsAutoSave() {
+  if (!settingsDirty || settingsSaveInFlight) return;
+  saveSettings({ silent: true }).catch(() => { });
+}
+
+window.addEventListener('pagehide', flushPendingSettingsAutoSave);
+window.addEventListener('beforeunload', flushPendingSettingsAutoSave);
+window.addEventListener('blur', flushPendingSettingsAutoSave);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') {
+    flushPendingSettingsAutoSave();
+  }
+});
+
 // Save settings on change
 inputEmail.addEventListener('change', async () => {
   if (selectMailProvider.value === 'hotmail-api' || isLuckmailProvider()) {
@@ -3859,7 +4169,7 @@ inputVpsPassword.addEventListener('blur', () => {
   });
 });
 
-[inputLuckmailApiKey, inputLuckmailBaseUrl, inputLuckmailDomain].forEach((input) => {
+[inputLuckmailApiKey, inputLuckmailBaseUrl, inputLuckmailDomain, inputHerosmsApiKey].forEach((input) => {
   input?.addEventListener('input', () => {
     markSettingsDirty(true);
     scheduleSettingsAutoSave();
@@ -3872,6 +4182,27 @@ inputVpsPassword.addEventListener('blur', () => {
 selectLuckmailEmailType?.addEventListener('change', () => {
   markSettingsDirty(true);
   saveSettings({ silent: true }).catch(() => { });
+});
+
+inputHerosmsMaxPricePerNumber?.addEventListener('input', () => {
+  markSettingsDirty(true);
+  const raw = String(inputHerosmsMaxPricePerNumber.value || '').trim();
+  if (!raw) return;
+  const numeric = Number(raw);
+  if (!Number.isFinite(numeric) || numeric < 0) return;
+  scheduleSettingsAutoSave();
+});
+inputHerosmsMaxPricePerNumber?.addEventListener('blur', () => {
+  inputHerosmsMaxPricePerNumber.value = String(normalizeHerosmsMaxPricePerNumber(inputHerosmsMaxPricePerNumber.value));
+  saveSettings({ silent: true }).catch(() => { });
+});
+
+btnHerosmsCheckBalance?.addEventListener('click', () => {
+  checkHerosmsBalanceFromPanel().catch(() => { });
+});
+
+btnAccountsReexport?.addEventListener('click', () => {
+  reexportAccountsFileFromPanel().catch(() => { });
 });
 
 inputPassword.addEventListener('input', () => {
@@ -3952,6 +4283,16 @@ selectIcloudHostPreference?.addEventListener('change', () => {
 
 checkboxAutoDeleteIcloud?.addEventListener('change', () => {
   markSettingsDirty(true);
+  saveSettings({ silent: true }).catch(() => { });
+});
+
+inputIcloudAliasLabelPattern?.addEventListener('input', () => {
+  markSettingsDirty(true);
+  if (!String(inputIcloudAliasLabelPattern.value || '').trim()) return;
+  scheduleSettingsAutoSave();
+});
+inputIcloudAliasLabelPattern?.addEventListener('blur', () => {
+  inputIcloudAliasLabelPattern.value = normalizeIcloudAliasLabelPatternValue(inputIcloudAliasLabelPattern.value);
   saveSettings({ silent: true }).catch(() => { });
 });
 
@@ -4227,6 +4568,21 @@ inputVerificationResendCount?.addEventListener('blur', () => {
     )
   );
   saveSettings({ silent: true }).catch(() => { });
+});
+
+[
+  inputSignupVerificationPollIntervalSeconds,
+  inputSignupVerificationPollMaxAttempts,
+  inputLoginVerificationPollIntervalSeconds,
+  inputLoginVerificationPollMaxAttempts,
+].forEach((input) => {
+  input?.addEventListener('input', () => {
+    markSettingsDirty(true);
+    scheduleSettingsAutoSave();
+  });
+  input?.addEventListener('blur', () => {
+    saveSettings({ silent: true }).catch(() => { });
+  });
 });
 
 // ============================================================

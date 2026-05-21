@@ -11,12 +11,14 @@
       buildPersistentSettingsPayload,
       broadcastDataUpdate,
       cancelScheduledAutoRun,
+      checkHerosmsBalance,
       checkIcloudSession,
       clearAccountRunHistory,
       deleteAccountRunHistoryRecords,
       clearAutoRunTimerAlarm,
       clearLuckmailRuntimeState,
       clearStopRequest,
+      clickWithDebugger,
       closeLocalhostCallbackTabs,
       closeTabsByUrlPrefix,
       deleteHotmailAccount,
@@ -32,6 +34,7 @@
       fetchGeneratedEmail,
       finalizeStep3Completion,
       finalizeIcloudAliasAfterSuccessfulFlow,
+      finalizeSuccessfulRegistrationArtifacts,
       findHotmailAccount,
       flushCommand,
       getCurrentLuckmailPurchase,
@@ -57,12 +60,21 @@
       notifyStepComplete,
       notifyStepError,
       patchHotmailAccount,
+      emailBindForCpaLogin,
+      phoneVerifyCancel,
+      phoneVerifyComplete,
+      phoneVerifyPollForCode,
+      phoneVerifyReplaceNumber,
+      phoneVerifyRequestNumber,
+      phoneVerifyResendCurrentNumber,
+      phoneVerifyStatus,
       pollContributionStatus,
       registerTab,
       requestStop,
       handleCloudflareSecurityBlocked,
       resetState,
       resumeAutoRun,
+      reexportAccountsFile,
       scheduleAutoRun,
       selectLuckmailPurchase,
       setCurrentHotmailAccount,
@@ -77,6 +89,7 @@
       setPersistentSettings,
       setState,
       setStepStatus,
+      shouldUseCustomRegistrationEmail,
       skipAutoRunCountdown,
       skipStep,
       startContributionFlow,
@@ -137,13 +150,17 @@
             await setState({ signupVerificationRequestedAt: payload.signupVerificationRequestedAt });
           }
           if (payload.loginVerificationRequestedAt) {
-            await setState({ loginVerificationRequestedAt: payload.loginVerificationRequestedAt });
+            await setState({
+              loginVerificationRequestedAt: payload.loginVerificationRequestedAt,
+              loginVerificationBypassed: false,
+            });
           }
           break;
         case 7:
-          if (payload.loginVerificationRequestedAt) {
-            await setState({ loginVerificationRequestedAt: payload.loginVerificationRequestedAt });
-          }
+          await setState({
+            loginVerificationRequestedAt: payload.loginVerificationRequestedAt || null,
+            loginVerificationBypassed: Boolean(payload.loginVerificationBypassed),
+          });
           break;
         case 4:
           await setState({
@@ -155,6 +172,7 @@
           await setState({
             lastEmailTimestamp: payload.emailTimestamp || null,
             loginVerificationRequestedAt: null,
+            loginVerificationBypassed: Boolean(payload.loginVerificationBypassed),
           });
           break;
         case 9:
@@ -162,7 +180,11 @@
             if (!isLocalhostOAuthCallbackUrl(payload.localhostUrl)) {
               throw new Error('步骤 9 返回了无效的 localhost OAuth 回调地址。');
             }
-            await setState({ localhostUrl: payload.localhostUrl });
+            await setState({
+              localhostUrl: payload.localhostUrl,
+              oauthFlowDeadlineAt: null,
+              oauthFlowDeadlineSourceUrl: null,
+            });
             broadcastDataUpdate({ localhostUrl: payload.localhostUrl });
           }
           break;
@@ -195,6 +217,12 @@
             });
           }
           await finalizeIcloudAliasAfterSuccessfulFlow(latestState);
+          if (typeof shouldUseCustomRegistrationEmail === 'function' && shouldUseCustomRegistrationEmail(latestState) && latestState.email) {
+            await setEmailStateSilently(null);
+          }
+          if (typeof finalizeSuccessfulRegistrationArtifacts === 'function') {
+            await finalizeSuccessfulRegistrationArtifacts(latestState);
+          }
           break;
         }
         default:
@@ -287,6 +315,9 @@
         case 'RESET': {
           clearStopRequest();
           await clearAutoRunTimerAlarm();
+          if (typeof phoneVerifyCancel === 'function') {
+            await phoneVerifyCancel('RESET_FLOW');
+          }
           await resetState();
           await addLog('流程已重置', 'info');
           return { ok: true };
@@ -688,6 +719,68 @@
           clearStopRequest();
           const result = await deleteUsedIcloudAliases();
           return { ok: true, ...result };
+        }
+
+        case 'HEROSMS_CHECK_BALANCE': {
+          return await checkHerosmsBalance();
+        }
+
+        case 'PHONE_VERIFY_START':
+        case 'PHONE_VERIFY_REQUEST_NUMBER': {
+          clearStopRequest();
+          return await phoneVerifyRequestNumber(message.payload || {});
+        }
+
+        case 'PHONE_VERIFY_STATUS': {
+          return await phoneVerifyStatus();
+        }
+
+        case 'PHONE_VERIFY_POLL':
+        case 'PHONE_VERIFY_POLL_CODE': {
+          return await phoneVerifyPollForCode();
+        }
+
+        case 'PHONE_VERIFY_RESEND': {
+          return await phoneVerifyResendCurrentNumber();
+        }
+
+        case 'PHONE_VERIFY_REPLACE':
+        case 'PHONE_VERIFY_NEW_NUMBER': {
+          return await phoneVerifyReplaceNumber(message.payload || {});
+        }
+
+        case 'PHONE_VERIFY_CANCEL': {
+          return await phoneVerifyCancel(message.payload?.reason || 'message_cancel');
+        }
+
+        case 'PHONE_VERIFY_COMPLETE': {
+          return await phoneVerifyComplete();
+        }
+
+        case 'EMAIL_BIND_REQUEST': {
+          return await emailBindForCpaLogin();
+        }
+
+        case 'CF_TURNSTILE_CLICK_REQUEST': {
+          const tabId = sender.tab?.id;
+          if (!tabId) {
+            return { error: 'Cloudflare Turnstile 自动点击失败：未找到标签页 ID。' };
+          }
+          const rect = message.payload?.rect;
+          if (!rect || !Number.isFinite(rect.centerX) || !Number.isFinite(rect.centerY)) {
+            return { error: 'Cloudflare Turnstile 自动点击失败：未提供有效的坐标。' };
+          }
+          try {
+            await clickWithDebugger(tabId, rect);
+            await addLog('Cloudflare Turnstile 已自动点击，等待验证完成...', 'info');
+            return { ok: true };
+          } catch (err) {
+            return { error: `Cloudflare Turnstile 自动点击失败：${err.message}` };
+          }
+        }
+
+        case 'ACCOUNTS_REEXPORT': {
+          return await reexportAccountsFile();
         }
 
         case 'STOP_FLOW': {

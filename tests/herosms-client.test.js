@@ -52,6 +52,58 @@ test('getNumber returns {id, phone} on ACCESS_NUMBER response', async () => {
   assert.equal(parsed.searchParams.get('service'), 'oi');
 });
 
+test('getBalance returns balance from ACCESS_BALANCE response', async () => {
+  const { fetchImpl, calls } = makeFetchStub(['ACCESS_BALANCE:12.34']);
+  const client = createHerosmsClient({ apiKey: 'K', fetchImpl });
+  const result = await client.getBalance();
+  assert.deepEqual(result, { balance: '12.34' });
+  const parsed = new URL(calls[0]);
+  assert.equal(parsed.searchParams.get('action'), 'getBalance');
+});
+
+test('getPrices returns {cost,count} for service+country JSON response', async () => {
+  const payload = JSON.stringify({ '151': { oi: { cost: 0.45, count: 12 } } });
+  const { fetchImpl, calls } = makeFetchStub([payload]);
+  const client = createHerosmsClient({ apiKey: 'K', fetchImpl });
+  const result = await client.getPrices({ service: 'oi', country: 151 });
+  assert.equal(result.cost, 0.45);
+  assert.equal(result.count, 12);
+  const parsed = new URL(calls[0]);
+  assert.equal(parsed.searchParams.get('action'), 'getPrices');
+  assert.equal(parsed.searchParams.get('service'), 'oi');
+  assert.equal(parsed.searchParams.get('country'), '151');
+});
+
+test('getPrices throws MISSING_PRICE when country/service entry is absent', async () => {
+  const payload = JSON.stringify({ '73': { wa: { cost: 1 } } });
+  const { fetchImpl } = makeFetchStub([payload]);
+  const client = createHerosmsClient({ apiKey: 'K', fetchImpl });
+  await assert.rejects(() => client.getPrices({ service: 'oi', country: 151 }), (err) => {
+    assert.equal(err.code, 'MISSING_PRICE');
+    return true;
+  });
+});
+
+test('getPrices propagates BAD_KEY / NO_BALANCE / BANNED errors', async () => {
+  const { fetchImpl: badKey } = makeFetchStub(['BAD_KEY']);
+  await assert.rejects(
+    () => createHerosmsClient({ apiKey: 'K', fetchImpl: badKey }).getPrices({ service: 'oi', country: 151 }),
+    (err) => err.code === 'BAD_KEY'
+  );
+
+  const { fetchImpl: noBal } = makeFetchStub(['NO_BALANCE']);
+  await assert.rejects(
+    () => createHerosmsClient({ apiKey: 'K', fetchImpl: noBal }).getPrices({ service: 'oi', country: 151 }),
+    (err) => err.code === 'NO_BALANCE'
+  );
+
+  const { fetchImpl: banned } = makeFetchStub(['BANNED:1735689600']);
+  await assert.rejects(
+    () => createHerosmsClient({ apiKey: 'K', fetchImpl: banned }).getPrices({ service: 'oi', country: 151 }),
+    (err) => err.code === 'BANNED'
+  );
+});
+
 test('getNumber throws NoNumbersError on NO_NUMBERS', async () => {
   const { fetchImpl } = makeFetchStub(['NO_NUMBERS']);
   const client = createHerosmsClient({ apiKey: 'K', fetchImpl });

@@ -79,6 +79,15 @@ const PERSISTED_SETTING_DEFAULTS = {
   loginVerificationPollIntervalMs: 20000,
   loginVerificationPollMaxAttempts: 6,
   mailProvider: '163',
+  emailGenerator: 'icloud',
+  herosmsApiKey: '',
+  herosmsCountryPreference: 'auto',
+  herosmsCountries: [
+    { code: 151, enabled: true },
+    { code: 73, enabled: true },
+    { code: 16, enabled: true },
+  ],
+  herosmsMaxPricePerNumber: 0.5,
 };
 function normalizePanelMode(value) { return value === 'sub2api' ? 'sub2api' : 'cpa'; }
 function normalizeLocalCpaStep9Mode(value) { return value === 'bypass' ? 'bypass' : 'submit'; }
@@ -87,7 +96,29 @@ function normalizeAutoRunDelayMinutes(value) { return Number(value) || 30; }
 function normalizeAutoStepDelaySeconds(value) { return value == null || value === '' ? null : Number(value); }
 function normalizeMailProvider(value) { return String(value || '').trim().toLowerCase() || '163'; }
 function normalizeMail2925Mode(value) { return String(value || '').trim().toLowerCase() === 'receive' ? 'receive' : 'provide'; }
-function normalizeEmailGenerator(value) { return String(value || '').trim().toLowerCase() || 'duck'; }
+function normalizeEmailGenerator(value) { const normalized = String(value || '').trim().toLowerCase(); return normalized === 'duck' ? 'duck' : (normalized || 'icloud'); }
+function normalizeHerosmsCountryPreference(value) { const normalized = String(value || '').trim().toLowerCase(); return normalized === '151' ? 'chile' : (normalized === 'br' ? 'brazil' : 'auto'); }
+function normalizeHerosmsMaxPricePerNumber(value) {
+  if (value === '' || value === null || value === undefined) return PERSISTED_SETTING_DEFAULTS.herosmsMaxPricePerNumber;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) return PERSISTED_SETTING_DEFAULTS.herosmsMaxPricePerNumber;
+  return Math.round(numeric * 10000) / 10000;
+}
+function normalizeHerosmsCountries(value) {
+  const fallback = PERSISTED_SETTING_DEFAULTS.herosmsCountries;
+  if (!Array.isArray(value)) return fallback.map(entry => ({ code: entry.code, enabled: Boolean(entry.enabled) }));
+  const seen = new Set();
+  const out = [];
+  for (const entry of value) {
+    if (!entry) continue;
+    const code = Number(typeof entry === 'object' ? entry.code : entry);
+    if (!Number.isFinite(code) || code < 0 || seen.has(code)) continue;
+    seen.add(code);
+    const enabled = typeof entry === 'object' && entry.enabled !== undefined ? Boolean(entry.enabled) : true;
+    out.push({ code: Math.floor(code), enabled });
+  }
+  return out.length ? out : fallback.map(entry => ({ code: entry.code, enabled: Boolean(entry.enabled) }));
+}
 function normalizeIcloudHost(value) { const normalized = String(value || '').trim().toLowerCase(); return normalized === 'icloud.com' || normalized === 'icloud.com.cn' ? normalized : ''; }
 function normalizeHotmailServiceMode(value) { return String(value || '').trim().toLowerCase() === 'remote' ? 'remote' : 'local'; }
 function normalizeHotmailRemoteBaseUrl(value) { return String(value || '').trim(); }
@@ -136,4 +167,30 @@ return {
     api.normalizePersistentSettingValue('sub2apiDefaultProxyName', ' proxy-a '),
     'proxy-a'
   );
+  assert.equal(api.normalizePersistentSettingValue('emailGenerator', ''), 'icloud');
+  assert.equal(api.normalizePersistentSettingValue('herosmsApiKey', ' key '), 'key');
+  assert.equal(api.normalizePersistentSettingValue('herosmsCountryPreference', '151'), 'chile');
+  assert.equal(api.normalizePersistentSettingValue('herosmsCountryPreference', 'br'), 'brazil');
+  assert.equal(api.normalizePersistentSettingValue('herosmsCountryPreference', 'unknown'), 'auto');
+  assert.equal(api.normalizePersistentSettingValue('herosmsMaxPricePerNumber', ''), 0.5);
+  assert.equal(api.normalizePersistentSettingValue('herosmsMaxPricePerNumber', '0.42'), 0.42);
+  assert.equal(api.normalizePersistentSettingValue('herosmsMaxPricePerNumber', '-3'), 0.5);
+  assert.equal(api.normalizePersistentSettingValue('herosmsMaxPricePerNumber', 'NaN'), 0.5);
+  assert.equal(api.normalizePersistentSettingValue('herosmsMaxPricePerNumber', '0'), 0);
+  assert.deepEqual(
+    api.normalizePersistentSettingValue('herosmsCountries', [
+      { code: 73, enabled: true },
+      { code: 151, enabled: false },
+      { code: '999', enabled: true },
+      { code: 73, enabled: true },
+    ]),
+    [
+      { code: 73, enabled: true },
+      { code: 151, enabled: false },
+      { code: 999, enabled: true },
+    ]
+  );
+  const defaultCountries = api.normalizePersistentSettingValue('herosmsCountries', undefined);
+  assert.equal(defaultCountries[0].code, 151);
+  assert.equal(defaultCountries[0].enabled, true);
 });

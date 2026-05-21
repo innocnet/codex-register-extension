@@ -221,7 +221,7 @@
         <select id="select-email-generator" class="data-select">
           <option value="duck">DuckDuckGo</option>
           <option value="cloudflare">Cloudflare</option>
-          <option value="icloud">iCloud 隐私邮箱</option>
+          <option value="icloud" selected>iCloud 隐私邮箱</option>
           <option value="cloudflare-temp-email">Cloudflare Temp Email</option>
         </select>
       </div>
@@ -276,6 +276,37 @@
         <div class="data-inline">
           <input type="text" id="input-email" class="data-input" placeholder="自动生成或手动粘贴邮箱" />
           <button id="btn-fetch-email" class="btn btn-outline btn-sm data-inline-btn" type="button">获取</button>
+        </div>
+      </div>
+      <div id="herosms-section" class="herosms-card">
+        <div class="section-mini-header">
+          <div class="section-mini-copy">
+            <span class="section-label">HeroSMS 短信</span>
+            <span class="data-value">OpenAI 手机号验证，默认按智利、巴西、英国轮询。</span>
+          </div>
+          <div class="section-mini-actions">
+            <button id="btn-herosms-check-balance" class="btn btn-ghost btn-xs" type="button">查余额</button>
+            <button id="btn-accounts-reexport" class="btn btn-ghost btn-xs" type="button">导出 accounts.txt</button>
+          </div>
+        </div>
+        <div class="data-row">
+          <span class="data-label">API Key</span>
+          <input type="password" id="input-herosms-api-key" class="data-input mono" placeholder="请输入 HeroSMS API Key" />
+        </div>
+        <div class="data-row herosms-country-row-wrapper">
+          <span class="data-label">候选国家</span>
+          <div id="herosms-country-list" class="herosms-country-list" role="list" aria-label="HeroSMS 候选国家"></div>
+        </div>
+        <div class="data-row">
+          <span class="data-label">单条上限</span>
+          <div class="data-inline">
+            <input type="number" id="input-herosms-max-price-per-number" class="data-input mono" value="0.5" min="0" step="0.01" title="单个手机号最大消费（与 HeroSMS 控制台显示的单价单位一致），超过则跳过该国家" />
+            <span class="data-unit">/ 条</span>
+          </div>
+        </div>
+        <div class="data-row">
+          <span class="data-label">余额</span>
+          <span id="herosms-balance-status" class="data-value mono">未查询</span>
         </div>
       </div>
       <div class="data-row">
@@ -551,6 +582,10 @@
           <input type="checkbox" id="checkbox-auto-delete-icloud" />
           <span>成功使用后自动删除 iCloud 别名</span>
         </label>
+      </div>
+      <div class="data-row">
+        <span class="data-label">标签模板</span>
+        <input type="text" id="input-icloud-alias-label-pattern" class="data-input mono" placeholder="例如 {seq:003} 或 Codex {seq:003}" title="支持 {seq}（自增序号）、{seq:003}（零填充宽度）、{date}（YYYY-MM-DD）；自增序号按已有别名最大值+1，默认 {seq:003}" />
       </div>
       <div class="icloud-card">
         <div id="icloud-summary" class="icloud-summary">加载你的 iCloud Hide My Email 别名以便在这里管理。</div>

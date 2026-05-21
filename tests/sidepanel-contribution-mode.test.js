@@ -118,6 +118,20 @@ test('sidepanel html contains contribution mode runtime UI and loads the module 
   assert.ok(moduleIndex < sidepanelIndex);
 });
 
+test('sidepanel exposes HeroSMS settings, balance check, and accounts export controls', () => {
+  const html = fs.readFileSync('sidepanel/sidepanel.html', 'utf8');
+
+  assert.match(html, /id="herosms-section"/);
+  assert.match(html, /id="input-herosms-api-key"/);
+  assert.match(html, /id="herosms-country-list"/);
+  assert.match(html, /id="input-herosms-max-price-per-number"/);
+  assert.match(html, /id="btn-herosms-check-balance"/);
+  assert.match(html, /id="btn-accounts-reexport"/);
+  assert.match(html, /id="herosms-balance-status"/);
+  assert.match(sidepanelSource, /HEROSMS_CHECK_BALANCE/);
+  assert.match(sidepanelSource, /ACCOUNTS_REEXPORT/);
+});
+
 test('collectSettingsPayload omits custom password and local sync settings in contribution mode', () => {
   const bundle = extractFunction('collectSettingsPayload');
 
@@ -140,6 +154,7 @@ const selectMailProvider = { value: '163' };
 const selectEmailGenerator = { value: 'duck' };
 const checkboxAutoDeleteIcloud = { checked: true };
 const selectIcloudHostPreference = { value: 'auto' };
+const inputIcloudAliasLabelPattern = { value: 'Codex {seq:003}' };
 const inputAccountRunHistoryTextEnabled = { checked: true };
 const inputAccountRunHistoryHelperBaseUrl = { value: 'http://127.0.0.1:17373' };
 const inputInbucketHost = { value: 'inbucket.local' };
@@ -150,6 +165,16 @@ const inputLuckmailApiKey = { value: 'lk-api-key' };
 const inputLuckmailBaseUrl = { value: 'https://mails.example.com' };
 const selectLuckmailEmailType = { value: 'ms_graph' };
 const inputLuckmailDomain = { value: 'luckmail.example.com' };
+const inputHerosmsApiKey = { value: ' hero-key ' };
+const inputHerosmsMaxPricePerNumber = { value: '0.42' };
+const HEROSMS_COUNTRY_PAYLOAD = [
+  { code: 73, enabled: true },
+  { code: 151, enabled: false },
+  { code: 16, enabled: true },
+];
+function collectHerosmsCountriesFromUi() {
+  return HEROSMS_COUNTRY_PAYLOAD.map((entry) => ({ ...entry }));
+}
 const inputTempEmailBaseUrl = { value: 'https://temp.example.com' };
 const inputTempEmailAdminAuth = { value: 'admin-secret' };
 const inputTempEmailCustomAuth = { value: 'custom-secret' };
@@ -160,6 +185,10 @@ const inputAutoDelayEnabled = { checked: true };
 const inputAutoDelayMinutes = { value: '30' };
 const inputAutoStepDelaySeconds = { value: '10' };
 const inputVerificationResendCount = { value: '6' };
+const inputSignupVerificationPollIntervalSeconds = { value: '20' };
+const inputSignupVerificationPollMaxAttempts = { value: '6' };
+const inputLoginVerificationPollIntervalSeconds = { value: '20' };
+const inputLoginVerificationPollMaxAttempts = { value: '6' };
 const DEFAULT_VERIFICATION_RESEND_COUNT = 4;
 
 function getCloudflareDomainsFromState() { return { domains: ['example.com'], activeDomain: 'example.com' }; }
@@ -173,12 +202,26 @@ function buildManagedAliasBaseEmailPayload() { return { gmailBaseEmail: '', mail
 function getSelectedHotmailServiceMode() { return 'local'; }
 function normalizeLuckmailBaseUrl(value) { return String(value || '').trim(); }
 function normalizeLuckmailEmailType(value) { return String(value || '').trim(); }
+function normalizeHerosmsMaxPricePerNumber(value) {
+  if (value === '' || value === null || value === undefined) return 0.5;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) return 0.5;
+  return Math.round(numeric * 10000) / 10000;
+}
+function normalizeIcloudAliasLabelPatternValue(value) {
+  if (value === '' || value === null || value === undefined) return '{seq:003}';
+  const trimmed = String(value).trim();
+  if (!trimmed) return '{seq:003}';
+  return trimmed.slice(0, 80);
+}
 function normalizeCloudflareTempEmailBaseUrlValue(value) { return String(value || '').trim(); }
 function normalizeCloudflareTempEmailReceiveMailboxValue(value) { return String(value || '').trim(); }
 function normalizeAutoRunThreadIntervalMinutes(value) { return Number(value) || 0; }
 function normalizeAutoDelayMinutes(value) { return Number(value) || 30; }
 function normalizeAutoStepDelaySeconds(value) { return value === '' ? null : Number(value); }
 function normalizeVerificationResendCount(value, fallback) { return Number.isFinite(Number(value)) ? Number(value) : fallback; }
+function normalizeVerificationPollIntervalMsFromSeconds(value, fallback) { return Number.isFinite(Number(value)) ? Number(value) * 1000 : fallback; }
+function normalizeVerificationPollMaxAttempts(value, fallback) { return Number.isFinite(Number(value)) ? Number(value) : fallback; }
 ${bundle}
 return {
   collectSettingsPayload,
@@ -196,6 +239,13 @@ return {
   assert.equal(normalPayload.customPassword, 'Secret123!');
   assert.equal(normalPayload.accountRunHistoryTextEnabled, true);
   assert.equal(normalPayload.accountRunHistoryHelperBaseUrl, 'http://127.0.0.1:17373');
+  assert.equal(normalPayload.herosmsApiKey, ' hero-key ');
+  assert.deepEqual(normalPayload.herosmsCountries, [
+    { code: 73, enabled: true },
+    { code: 151, enabled: false },
+    { code: 16, enabled: true },
+  ]);
+  assert.equal(normalPayload.herosmsMaxPricePerNumber, 0.42);
 });
 
 test('contribution mode manager enters mode, starts main auto flow, polls contribution status, and exits cleanly', async () => {
