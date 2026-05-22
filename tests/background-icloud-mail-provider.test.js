@@ -143,3 +143,41 @@ return { getMailConfig };
     navigateOnReuse: true,
   });
 });
+
+test('getMailConfig defaults icloud auto preference to China host', () => {
+  const bundle = extractFunction('getMailConfig');
+  const api = new Function(`
+const ICLOUD_PROVIDER = 'icloud';
+const GMAIL_PROVIDER = 'gmail';
+const HOTMAIL_PROVIDER = 'hotmail-api';
+const LUCKMAIL_PROVIDER = 'luckmail-api';
+const CLOUDFLARE_TEMP_EMAIL_PROVIDER = 'cloudflare-temp-email';
+function normalizeIcloudHost(value = '') {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === 'icloud.com' || normalized === 'icloud.com.cn' ? normalized : '';
+}
+function normalizeInbucketOrigin(value) { return String(value || '').trim(); }
+function getConfiguredIcloudHostPreference() {
+  return '';
+}
+function getIcloudLoginUrlForHost(host) {
+  return host === 'icloud.com.cn' ? 'https://www.icloud.com.cn/' : 'https://www.icloud.com/';
+}
+function getIcloudMailUrlForHost(host) {
+  return host === 'icloud.com.cn' ? 'https://www.icloud.com.cn/mail/' : 'https://www.icloud.com/mail/';
+}
+${bundle}
+return { getMailConfig };
+`)();
+
+  assert.deepEqual(api.getMailConfig({
+    mailProvider: 'icloud',
+    icloudHostPreference: 'auto',
+    preferredIcloudHost: '',
+  }), {
+    source: 'icloud-mail',
+    url: 'https://www.icloud.com.cn/mail/',
+    label: 'iCloud 邮箱',
+    navigateOnReuse: true,
+  });
+});

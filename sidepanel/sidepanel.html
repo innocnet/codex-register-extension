@@ -34,8 +34,6 @@
     </div>
     <div class="header-btns">
       <div class="run-group">
-        <button id="btn-contribution-mode" class="btn btn-outline btn-sm btn-contribution-mode" type="button"
-          aria-pressed="false" title="进入贡献模式">贡献</button>
         <input type="number" id="input-run-count" class="run-count-input" value="1" min="1" max="50" title="运行次数" />
         <button id="btn-auto-run" class="btn btn-success" title="自动执行全部步骤">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
@@ -103,37 +101,6 @@
           <option value="cpa">CPA 面板</option>
           <option value="sub2api">SUB2API</option>
         </select>
-      </div>
-      <div id="contribution-mode-panel" class="contribution-mode-panel" hidden>
-        <div class="contribution-mode-panel-header">
-          <span class="section-label">贡献模式</span>
-          <span class="contribution-mode-badge">CPA</span>
-        </div>
-        <p id="contribution-mode-text" class="contribution-mode-text">当前账号将用于支持项目维护。扩展会自动申请贡献登录地址并持续跟踪授权状态；如检测到回调地址，会自动提交，无需手动复制。</p>
-        <div class="data-row contribution-mode-field">
-          <span class="data-label">贡献昵称</span>
-          <input type="text" id="input-contribution-nickname" class="data-input" placeholder="可留空，默认使用当前邮箱" />
-        </div>
-        <div class="data-row contribution-mode-field">
-          <span class="data-label">QQ</span>
-          <input type="text" id="input-contribution-qq" class="data-input" inputmode="numeric" placeholder="可留空，只能填写数字" />
-        </div>
-        <div class="contribution-mode-status-grid">
-          <div class="contribution-mode-status-card">
-            <span class="contribution-mode-status-label">OAUTH</span>
-            <span id="contribution-oauth-status" class="contribution-mode-status-value">未生成登录地址</span>
-          </div>
-          <div class="contribution-mode-status-card">
-            <span class="contribution-mode-status-label">回调</span>
-            <span id="contribution-callback-status" class="contribution-mode-status-value">等待回调</span>
-          </div>
-        </div>
-        <div id="contribution-mode-summary" class="contribution-mode-summary">等待开始贡献</div>
-        <div class="contribution-mode-actions">
-          <button id="btn-start-contribution" class="btn btn-primary btn-sm" type="button">开始贡献</button>
-          <button id="btn-open-contribution-upload" class="btn btn-outline btn-sm" type="button">已有认证文件？前往上传</button>
-          <button id="btn-exit-contribution-mode" class="btn btn-ghost btn-sm" type="button">退出贡献模式</button>
-        </div>
       </div>
       <div class="data-row" id="row-vps-url">
         <span class="data-label">CPA</span>
@@ -571,9 +538,9 @@
       <div class="data-row">
         <span class="data-label">iCloud</span>
         <select id="select-icloud-host-preference" class="data-select">
-          <option value="auto">自动</option>
-          <option value="icloud.com">iCloud.com</option>
+          <option value="auto">自动（默认 iCloud.com.cn）</option>
           <option value="icloud.com.cn">iCloud.com.cn</option>
+          <option value="icloud.com">iCloud.com</option>
         </select>
       </div>
       <div class="data-row">
@@ -731,7 +698,6 @@
   <script src="hotmail-manager.js"></script>
   <script src="icloud-manager.js"></script>
   <script src="luckmail-manager.js"></script>
-  <script src="contribution-mode.js"></script>
   <script src="account-records-manager.js"></script>
   <script src="sidepanel.js"></script>
 </body>

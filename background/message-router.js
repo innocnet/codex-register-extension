@@ -68,7 +68,6 @@
       phoneVerifyRequestNumber,
       phoneVerifyResendCurrentNumber,
       phoneVerifyStatus,
-      pollContributionStatus,
       registerTab,
       requestStop,
       handleCloudflareSecurityBlocked,
@@ -78,7 +77,6 @@
       scheduleAutoRun,
       selectLuckmailPurchase,
       setCurrentHotmailAccount,
-      setContributionMode,
       setEmailState,
       setEmailStateSilently,
       setIcloudAliasPreservedState,
@@ -92,7 +90,6 @@
       shouldUseCustomRegistrationEmail,
       skipAutoRunCountdown,
       skipStep,
-      startContributionFlow,
       startAutoRunLoop,
       syncHotmailAccounts,
       testHotmailAccountMailAccess,
@@ -323,70 +320,6 @@
           return { ok: true };
         }
 
-        case 'SET_CONTRIBUTION_MODE': {
-          const enabled = Boolean(message.payload?.enabled);
-          const state = await ensureManualInteractionAllowed(enabled ? '进入贡献模式' : '退出贡献模式');
-          if (Object.values(state.stepStatuses || {}).some((status) => status === 'running')) {
-            throw new Error(enabled ? '当前有步骤正在执行，无法进入贡献模式。' : '当前有步骤正在执行，无法退出贡献模式。');
-          }
-          if (typeof setContributionMode !== 'function') {
-            throw new Error('贡献模式切换能力未接入。');
-          }
-          return {
-            ok: true,
-            state: await setContributionMode(enabled),
-          };
-        }
-
-        case 'START_CONTRIBUTION_FLOW': {
-          const state = await ensureManualInteractionAllowed('开始贡献');
-          if (Object.values(state.stepStatuses || {}).some((status) => status === 'running')) {
-            throw new Error('当前有步骤正在执行，无法开始贡献流程。');
-          }
-          if (typeof startContributionFlow !== 'function') {
-            throw new Error('贡献 OAuth 流程尚未接入。');
-          }
-          return {
-            ok: true,
-            state: await startContributionFlow({
-              nickname: message.payload?.nickname,
-              qq: message.payload?.qq,
-            }),
-          };
-        }
-
-        case 'SET_CONTRIBUTION_PROFILE': {
-          const state = await getState();
-          if (!state?.contributionMode) {
-            throw new Error('请先进入贡献模式。');
-          }
-          const nickname = String(message.payload?.nickname || '').trim();
-          const qq = String(message.payload?.qq || '').trim();
-          if (qq && !/^\d{1,20}$/.test(qq)) {
-            throw new Error('QQ 只能填写数字，且长度不能超过 20 位。');
-          }
-          await setState({
-            contributionNickname: nickname,
-            contributionQq: qq,
-          });
-          return {
-            ok: true,
-            state: await getState(),
-          };
-        }
-
-        case 'POLL_CONTRIBUTION_STATUS': {
-          if (typeof pollContributionStatus !== 'function') {
-            throw new Error('贡献状态轮询能力尚未接入。');
-          }
-          return {
-            ok: true,
-            state: await pollContributionStatus({
-              reason: message.payload?.reason || 'sidepanel_poll',
-            }),
-          };
-        }
-
         case 'CLEAR_ACCOUNT_RUN_HISTORY': {
           const state = await getState();
           if (isAutoRunLockedState(state)) {
@@ -438,17 +371,6 @@
 
         case 'AUTO_RUN': {
           clearStopRequest();
-          if (Boolean(message.payload?.contributionMode) && typeof setContributionMode === 'function') {
-            await setContributionMode(true);
-            if (typeof setState === 'function') {
-              const contributionNickname = String(message.payload?.contributionNickname || '').trim();
-              const contributionQq = String(message.payload?.contributionQq || '').trim();
-              await setState({
-                contributionNickname,
-                contributionQq,
-              });
-            }
-          }
           const state = await getState();
           if (getPendingAutoRunTimerPlan(state)) {
             throw new Error('已有自动运行倒计时计划，请先取消或立即开始。');
@@ -463,17 +385,6 @@
 
         case 'SCHEDULE_AUTO_RUN': {
           clearStopRequest();
-          if (Boolean(message.payload?.contributionMode) && typeof setContributionMode === 'function') {
-            await setContributionMode(true);
-            if (typeof setState === 'function') {
-              const contributionNickname = String(message.payload?.contributionNickname || '').trim();
-              const contributionQq = String(message.payload?.contributionQq || '').trim();
-              await setState({
-                contributionNickname,
-                contributionQq,
-              });
-            }
-          }
           const totalRuns = normalizeRunCount(message.payload?.totalRuns || 1);
           return await scheduleAutoRun(totalRuns, {
             delayMinutes: message.payload?.delayMinutes,

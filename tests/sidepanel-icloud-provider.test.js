@@ -79,3 +79,32 @@ return { getSelectedIcloudHostPreference, getMailProviderLoginUrl };
   assert.equal(api.getSelectedIcloudHostPreference(), 'icloud.com.cn');
   assert.equal(api.getMailProviderLoginUrl(), 'https://www.icloud.com.cn/');
 });
+
+test('getMailProviderLoginUrl defaults icloud auto preference to China host', () => {
+  const bundle = [
+    extractFunction('getSelectedIcloudHostPreference'),
+    extractFunction('getMailProviderLoginUrl'),
+  ].join('\n');
+
+  const api = new Function(`
+const ICLOUD_PROVIDER = 'icloud';
+const selectMailProvider = { value: ICLOUD_PROVIDER };
+const selectIcloudHostPreference = { value: 'auto' };
+const latestState = { icloudHostPreference: 'auto', preferredIcloudHost: '' };
+function normalizeIcloudHost(value = '') {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === 'icloud.com' || normalized === 'icloud.com.cn' ? normalized : '';
+}
+function getIcloudLoginUrlForHost(host) {
+  return host === 'icloud.com.cn' ? 'https://www.icloud.com.cn/' : 'https://www.icloud.com/';
+}
+function getMailProviderLoginConfig() {
+  return { label: 'iCloud 邮箱' };
+}
+${bundle}
+return { getSelectedIcloudHostPreference, getMailProviderLoginUrl };
+`)();
+
+  assert.equal(api.getSelectedIcloudHostPreference(), 'icloud.com.cn');
+  assert.equal(api.getMailProviderLoginUrl(), 'https://www.icloud.com.cn/');
+});
