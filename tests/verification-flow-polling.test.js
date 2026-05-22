@@ -729,6 +729,61 @@ test('verification flow uses configured login resend count for step 8', async ()
   assert.equal(pollCalls, 3);
 });
 
+test('verification flow keeps configured maxAttempts intact even when it exceeds the resend window', async () => {
+  const pollPayloads = [];
+
+  const helpers = api.createVerificationFlowHelpers({
+    addLog: async () => {},
+    chrome: { tabs: { update: async () => {} } },
+    CLOUDFLARE_TEMP_EMAIL_PROVIDER: 'cloudflare-temp-email',
+    completeStepFromBackground: async () => {},
+    confirmCustomVerificationStepBypassRequest: async () => ({ confirmed: true }),
+    getHotmailVerificationPollConfig: () => ({}),
+    getHotmailVerificationRequestTimestamp: () => 0,
+    getState: async () => ({}),
+    getTabId: async () => 1,
+    HOTMAIL_PROVIDER: 'hotmail-api',
+    isStopError: () => false,
+    LUCKMAIL_PROVIDER: 'luckmail-api',
+    MAIL_2925_VERIFICATION_INTERVAL_MS: 15000,
+    MAIL_2925_VERIFICATION_MAX_ATTEMPTS: 15,
+    pollCloudflareTempEmailVerificationCode: async () => ({}),
+    pollHotmailVerificationCode: async () => ({}),
+    pollLuckmailVerificationCode: async () => ({}),
+    sendToContentScript: async () => ({}),
+    sendToMailContentScriptResilient: async (_mail, message) => {
+      pollPayloads.push(message.payload);
+      return { code: '111111', emailTimestamp: 42 };
+    },
+    setState: async () => {},
+    setStepStatus: async () => {},
+    sleepWithStop: async () => {},
+    throwIfStopped: () => {},
+    VERIFICATION_POLL_MAX_ROUNDS: 5,
+  });
+
+  await helpers.resolveVerificationStep(
+    8,
+    {
+      email: 'user@example.com',
+      loginVerificationPollIntervalMs: 10000,
+      loginVerificationPollMaxAttempts: 12,
+      verificationResendCount: 2,
+      lastLoginCode: null,
+    },
+    { provider: 'icloud', label: 'iCloud 邮箱' },
+    {
+      requestFreshCodeFirst: false,
+      resendIntervalMs: 60000,
+      stepEnteredAt: Date.now(),
+    }
+  );
+
+  assert.equal(pollPayloads.length, 1);
+  assert.equal(pollPayloads[0].maxAttempts, 12);
+  assert.equal(pollPayloads[0].intervalMs, 10000);
+});
+
 test('verification flow uses signup-specific polling settings for step 4', () => {
   const helpers = api.createVerificationFlowHelpers({
     addLog: async () => {},

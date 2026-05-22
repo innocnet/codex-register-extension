@@ -129,6 +129,10 @@ function isSignupEmailAlreadyExistsPage() {
   return false;
 }
 
+function isSignupPhoneAlreadyExistsPage() {
+  return false;
+}
+
 function getSignupPasswordInput() {
   return null;
 }
@@ -177,6 +181,10 @@ function isSignupEmailAlreadyExistsPage() {
   return false;
 }
 
+function isSignupPhoneAlreadyExistsPage() {
+  return false;
+}
+
 function getSignupPasswordInput() {
   return null;
 }
@@ -202,6 +210,66 @@ return {
     retryButton: { textContent: 'Try again' },
     userAlreadyExistsBlocked: false,
   });
+});
+
+test('signup verification state surfaces phone_exists ahead of password retry loop', () => {
+  const api = new Function(`
+function isStep5Ready() {
+  return false;
+}
+
+function isVerificationPageStillVisible() {
+  return false;
+}
+
+function isSignupPasswordErrorPage() {
+  return false;
+}
+
+function getSignupPasswordTimeoutErrorPageState() {
+  return null;
+}
+
+function isSignupEmailAlreadyExistsPage() {
+  return false;
+}
+
+function isSignupPhoneAlreadyExistsPage() {
+  return true;
+}
+
+function getSignupPasswordInput() {
+  return { value: '' };
+}
+
+function getSignupPasswordSubmitButton() {
+  return { textContent: '继续' };
+}
+
+${extractFunction('inspectSignupVerificationState')}
+
+return {
+  run() {
+    return inspectSignupVerificationState();
+  },
+};
+`)();
+
+  assert.deepStrictEqual(api.run(), { state: 'phone_exists' });
+});
+
+test('phone-exists pattern matches Chinese variants and English phone-number copy', () => {
+  const source = fs.readFileSync('content/signup-page.js', 'utf8');
+  const match = source.match(/const SIGNUP_PHONE_EXISTS_PATTERN = (\/[^\n]+\/i);/);
+  if (!match) {
+    throw new Error('SIGNUP_PHONE_EXISTS_PATTERN not found');
+  }
+  const pattern = new Function(`return ${match[1]};`)();
+
+  assert.match('与此电话号码相关联的帐户已存在', pattern);
+  assert.match('与此手机号相关联的账户已存在', pattern);
+  assert.match('An account associated with this phone number already exists.', pattern);
+  assert.doesNotMatch('与此电子邮件地址相关联的帐户已存在', pattern);
 });
 
 test('step 7 restart signal detects login timeout page without legacy matcher helper', () => {

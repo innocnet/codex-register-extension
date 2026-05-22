@@ -757,6 +757,7 @@ const AUTH_TIMEOUT_ERROR_DETAIL_PATTERN = /operation\s+timed\s+out|timed\s+out|�
 const AUTH_ROUTE_ERROR_PATTERN = /405\s+method\s+not\s+allowed|route\s+error.*405/i;
 const SIGNUP_USER_ALREADY_EXISTS_ERROR_PREFIX = 'SIGNUP_USER_ALREADY_EXISTS::';
 const SIGNUP_EMAIL_EXISTS_PATTERN = /与此电子邮件地址相关联的帐户已存在|account\s+associated\s+with\s+this\s+email\s+address\s+already\s+exists|email\s+address.*already\s+exists/i;
+const SIGNUP_PHONE_EXISTS_PATTERN = /与此(?:电话号码|手机号码|手机号)相关联的(?:帐户|账户)已存在|account\s+associated\s+with\s+this\s+phone\s+number\s+already\s+exists|phone\s+number.*already\s+(?:in\s+use|exists|registered|associated)/i;
 
 const CF_TURNSTILE_PAGE_PATTERN = /just\s+a\s+moment|verify\s+(?:you\s+are|you're)\s+human|checking\s+(?:if|the|this|site)|security\s+check(?:\s+required)?|正在进行安全验证|请验证您是真人|完成安全验证|验证您是真人/i;
 const CF_TURNSTILE_MAX_WAIT_MS = 120000;
@@ -813,6 +814,12 @@ function getVerificationErrorText() {
 function createSignupUserAlreadyExistsError() {
   return new Error(
     `${SIGNUP_USER_ALREADY_EXISTS_ERROR_PREFIX}步骤 4：检测到 user_already_exists，说明当前用户已存在，当前轮将直接停止。`
+  );
+}
+
+function createSignupPhoneAlreadyExistsError() {
+  return new Error(
+    `${SIGNUP_USER_ALREADY_EXISTS_ERROR_PREFIX}步骤 3：检测到“与此电话号码相关联的帐户已存在”，号码已被绑定，当前轮将直接停止并进入下一轮。`
   );
 }
 
@@ -2330,6 +2337,10 @@ function isSignupEmailAlreadyExistsPage() {
   return isSignupPasswordPage() && SIGNUP_EMAIL_EXISTS_PATTERN.test(getPageTextSnapshot());
 }
 
+function isSignupPhoneAlreadyExistsPage() {
+  return isSignupPasswordPage() && SIGNUP_PHONE_EXISTS_PATTERN.test(getPageTextSnapshot());
+}
+
 function inspectSignupVerificationState() {
   if (isStep5Ready()) {
     return { state: 'step5' };
@@ -2346,6 +2357,10 @@ function inspectSignupVerificationState() {
 
   if (isVerificationPageStillVisible()) {
     return { state: 'verification' };
+  }
+
+  if (isSignupPhoneAlreadyExistsPage()) {
+    return { state: 'phone_exists' };
   }
 
   if (isSignupEmailAlreadyExistsPage()) {
@@ -2371,7 +2386,7 @@ async function waitForSignupVerificationTransition(timeout = 5000) {
     throwIfStopped();
 
     const snapshot = inspectSignupVerificationState();
-    if (snapshot.state === 'step5' || snapshot.state === 'verification' || snapshot.state === 'error' || snapshot.state === 'email_exists') {
+    if (snapshot.state === 'step5' || snapshot.state === 'verification' || snapshot.state === 'error' || snapshot.state === 'email_exists' || snapshot.state === 'phone_exists') {
       return snapshot;
     }
 
@@ -2405,6 +2420,10 @@ async function prepareSignupVerificationFlow(payload = {}, timeout = 30000) {
     if (snapshot.state === 'verification') {
       log(`${prepareLogLabel}：验证码页面已就绪${recoveryRound ? `（期间自动恢复 ${recoveryRound} 次）` : ''}。`, 'ok');
       return { ready: true, retried: recoveryRound, prepareSource };
+    }
+
+    if (snapshot.state === 'phone_exists') {
+      throw createSignupPhoneAlreadyExistsError();
     }
 
     if (snapshot.state === 'email_exists') {

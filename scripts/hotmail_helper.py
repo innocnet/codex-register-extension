@@ -65,6 +65,7 @@ FETCH_LIMIT_DEFAULT = 5
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 ACCOUNT_LOG_PATH = os.path.join(BASE_DIR, "data", "account-run-history.txt")
 ACCOUNT_RECORDS_SNAPSHOT_PATH = os.path.join(BASE_DIR, "data", "account-run-history.json")
+ACCOUNTS_TXT_PATH = os.path.join(BASE_DIR, "data", "accounts.txt")
 ACCOUNT_RECORDS_LOCK = threading.Lock()
 
 
@@ -144,6 +145,7 @@ def normalize_account_run_snapshot_record(record):
 
     email_addr = str(record.get("email") or "").strip()
     password = str(record.get("password") or "").strip()
+    signup_phone = str(record.get("signupPhone") or record.get("phone") or "").strip()
     final_status = str(record.get("finalStatus") or "").strip().lower()
     if not email_addr or not password or final_status not in {"success", "failed", "stopped"}:
         return None
@@ -175,6 +177,7 @@ def normalize_account_run_snapshot_record(record):
         "recordId": str(record.get("recordId") or email_addr).strip() or email_addr,
         "email": email_addr,
         "password": password,
+        "signupPhone": signup_phone,
         "finalStatus": final_status,
         "finishedAt": finished_at,
         "retryCount": retry_count,
@@ -220,6 +223,32 @@ def normalize_account_run_snapshot_payload(payload):
     }
 
 
+def build_accounts_txt_lines(records):
+    lines = []
+    for item in records:
+        if str(item.get("finalStatus") or "").strip().lower() != "success":
+            continue
+        email_addr = str(item.get("email") or "").strip()
+        password = str(item.get("password") or "").strip()
+        phone = str(item.get("signupPhone") or "").strip()
+        if not email_addr or not password:
+            continue
+        lines.append(f"{email_addr}\t{password}\t{phone}")
+    return lines
+
+
+def write_accounts_txt(records):
+    lines = build_accounts_txt_lines(records)
+    os.makedirs(os.path.dirname(ACCOUNTS_TXT_PATH), exist_ok=True)
+    content = "\n".join(lines)
+    if content:
+        content += "\n"
+    with ACCOUNT_RECORDS_LOCK:
+        with open(ACCOUNTS_TXT_PATH, "w", encoding="utf-8") as handle:
+            handle.write(content)
+    return ACCOUNTS_TXT_PATH
+
+
 def sync_account_run_records(payload):
     normalized_payload = normalize_account_run_snapshot_payload(payload)
     os.makedirs(os.path.dirname(ACCOUNT_RECORDS_SNAPSHOT_PATH), exist_ok=True)
@@ -227,6 +256,7 @@ def sync_account_run_records(payload):
         with open(ACCOUNT_RECORDS_SNAPSHOT_PATH, "w", encoding="utf-8") as handle:
             json.dump(normalized_payload, handle, ensure_ascii=False, indent=2)
             handle.write("\n")
+    write_accounts_txt(normalized_payload.get("records") or [])
     return ACCOUNT_RECORDS_SNAPSHOT_PATH
 
 

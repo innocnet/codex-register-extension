@@ -399,12 +399,9 @@
             excludeCodes: [...rejectedCodes],
           });
 
-          // 现在 effectiveLastResendAt 一定有值（首轮用 stepEnteredAt），
-          // 内部 maxAttempts 总是按"距离下次重发还剩多久"动态收紧，避免在中间长时间空转。
-          const baseRemainingBeforeResendMs = Math.max(0, resendIntervalMs - (Date.now() - effectiveLastResendAt()));
-          const baseMaxAttempts = Math.max(1, Number(payload.maxAttempts) || 5);
-          const baseIntervalMs = Math.max(1, Number(payload.intervalMs) || 3000);
-          payload.maxAttempts = Math.max(1, Math.min(baseMaxAttempts, Math.floor(baseRemainingBeforeResendMs / baseIntervalMs) + 1));
+          // 单轮内严格按用户配置的 maxAttempts/intervalMs 跑满，跑完后再用 remainingBeforeResendMs 决定是否重发，
+          // 不再在 send 前按重发窗口压缩次数，避免日志里出现"配 12 次却显示 6/6"这种被静默截断的情况。
+          payload.maxAttempts = Math.max(1, Number(payload.maxAttempts) || 5);
 
           try {
             const timedPoll = await applyMailPollingTimeBudget(

@@ -75,6 +75,7 @@ test('account run history helper upgrades old records, keeps stopped items and s
     recordId: 'latest@example.com',
     email: 'latest@example.com',
     password: 'secret',
+    signupPhone: '',
     finalStatus: 'failed',
     finishedAt: record.finishedAt,
     retryCount: 2,
@@ -326,4 +327,58 @@ test('account run history helper deletes selected records and syncs remaining sn
     records: storedHistory,
   });
   assert.equal(logs[0].message, '账号记录快照已同步到本地：C:/tmp/account-run-history.json');
+});
+
+test('account run history record carries signupPhone from state and normalizes phone fallback', () => {
+  const source = fs.readFileSync('background/account-run-history.js', 'utf8');
+  const globalScope = {};
+  const api = new Function('self', `${source}; return self.MultiPageBackgroundAccountRunHistory;`)(globalScope);
+
+  const helpers = api.createAccountRunHistoryHelpers({
+    ACCOUNT_RUN_HISTORY_STORAGE_KEY: 'accountRunHistory',
+    addLog: async () => {},
+    buildLocalHelperEndpoint: (baseUrl, path) => `${baseUrl}${path}`,
+    chrome: { storage: { local: { get: async () => ({}), set: async () => {} } } },
+    getErrorMessage: (error) => error?.message || String(error || ''),
+    getState: async () => ({}),
+    normalizeAccountRunHistoryHelperBaseUrl: (value) => String(value || '').trim(),
+  });
+
+  const builtRecord = helpers.buildAccountRunHistoryRecord(
+    {
+      email: 'phone-user@example.com',
+      password: 'pw',
+      signupPhone: '+56 9 4890 1349',
+    },
+    'success',
+    ''
+  );
+  assert.equal(builtRecord.signupPhone, '+56 9 4890 1349');
+
+  const recordFromActivation = helpers.buildAccountRunHistoryRecord(
+    {
+      email: 'add-phone-user@icloud.com',
+      password: 'pw',
+      currentPhoneActivation: { phone: '+44 7700 900111', country: '16' },
+    },
+    'success',
+    ''
+  );
+  assert.equal(recordFromActivation.signupPhone, '+44 7700 900111');
+
+  const normalizedFromSignupField = helpers.normalizeAccountRunHistoryRecord({
+    email: 'phone-user@example.com',
+    password: 'pw',
+    finalStatus: 'success',
+    signupPhone: '  +44 7700 900111  ',
+  });
+  assert.equal(normalizedFromSignupField.signupPhone, '+44 7700 900111');
+
+  const normalizedFromLegacyField = helpers.normalizeAccountRunHistoryRecord({
+    email: 'legacy-phone@example.com',
+    password: 'pw',
+    finalStatus: 'success',
+    phone: '+55 11 988887777',
+  });
+  assert.equal(normalizedFromLegacyField.signupPhone, '+55 11 988887777');
 });

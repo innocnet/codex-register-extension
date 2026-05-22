@@ -5698,8 +5698,17 @@ function createConfiguredPhoneVerifyFlow(state = {}, options = {}) {
 
 async function setCurrentPhoneActivation(activation) {
   const currentPhoneActivation = activation ? { ...activation } : null;
-  await setState({ currentPhoneActivation });
-  broadcastDataUpdate({ currentPhoneActivation });
+  const stateUpdate = { currentPhoneActivation };
+  // 让 add-phone 绑定路径取到的 HeroSMS 手机号也回写到 signupPhone，
+  // 这样 accounts.txt / 账号记录能在邮箱注册 + 后置绑定手机号场景下也带上号码。
+  if (currentPhoneActivation?.phone) {
+    stateUpdate.signupPhone = String(currentPhoneActivation.phone);
+    if (currentPhoneActivation.country) {
+      stateUpdate.signupPhoneCountry = String(currentPhoneActivation.country);
+    }
+  }
+  await setState(stateUpdate);
+  broadcastDataUpdate(stateUpdate);
   return currentPhoneActivation;
 }
 

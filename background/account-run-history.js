@@ -142,6 +142,7 @@
 
       const email = String(record.email || '').trim();
       const password = String(record.password || '').trim();
+      const signupPhone = String(record.signupPhone || record.phone || '').trim();
       const finalStatus = normalizeFinalStatus(record.finalStatus || record.status || '');
 
       if (!email || !password || !finalStatus) {
@@ -170,6 +171,7 @@
         recordId: String(record.recordId || '').trim() || buildRecordId(email),
         email,
         password,
+        signupPhone,
         finalStatus,
         finishedAt,
         retryCount,
@@ -215,6 +217,11 @@
     function buildAccountRunHistoryRecord(state = {}, status = '', reason = '') {
       const email = String(state.email || '').trim();
       const password = String(state.password || state.customPassword || '').trim() || '无';
+      const signupPhone = String(
+        state.signupPhone
+        || state.currentPhoneActivation?.phone
+        || ''
+      ).trim();
       const finalStatus = normalizeFinalStatus(status);
 
       if (!email || !finalStatus) {
@@ -234,6 +241,7 @@
         recordId: buildRecordId(email),
         email,
         password,
+        signupPhone,
         finalStatus,
         finishedAt,
         retryCount,
