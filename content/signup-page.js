@@ -1216,23 +1216,46 @@ async function selectPhoneCountry(countryCode) {
     return null;
   }
 
-  // If dropdown has a search input, type the country name to filter
+  async function pollForCountryOption(timeoutMs = 5000, intervalMs = 200) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      throwIfStopped();
+      const option = findCountryOptionInDropdown();
+      if (option) return option;
+      await sleep(intervalMs);
+    }
+    return findCountryOptionInDropdown();
+  }
+
+  // If dropdown has a search input, type a search term to filter the (often virtualized) list.
   const searchInput = document.querySelector(
     '[role="dialog"] input, [role="listbox"] input, [role="listbox"] ~ * input, ' +
     'input[placeholder*="搜索" i], input[placeholder*="search" i], input[placeholder*="country" i], input[placeholder*="国家" i]'
   );
-  // Try Chinese names first since the page renders in Chinese
-  const countrySearchTerms = { 151: '智利', 73: '巴西', 16: '英国', 187: '美国' };
+  // 优先尝试拨号前缀（最稳，不依赖页面语言），再 fallback 中文/英文国家名。
+  const countrySearchTermsZh = { 151: '智利', 73: '巴西', 16: '英国', 187: '美国' };
   const countrySearchTermsEn = { 151: 'Chile', 73: 'Brazil', 16: 'United Kingdom', 187: 'United States' };
-  if (searchInput && isVisibleElement(searchInput)) {
-    const term = countrySearchTerms[countryCode] || countrySearchTermsEn[countryCode];
-    if (term) {
-      fillInput(searchInput, term);
-      await sleep(400);
-    }
-  }
+  const searchTerms = [];
+  if (dialingCode) searchTerms.push(`+${dialingCode}`);
+  if (countrySearchTermsZh[countryCode]) searchTerms.push(countrySearchTermsZh[countryCode]);
+  if (countrySearchTermsEn[countryCode]) searchTerms.push(countrySearchTermsEn[countryCode]);
 
-  const targetOption = findCountryOptionInDropdown();
+  let targetOption = null;
+  if (searchInput && isVisibleElement(searchInput) && searchTerms.length) {
+    for (const term of searchTerms) {
+      throwIfStopped();
+      // 清空再填，避免上一次搜索词残留导致过滤命中 0 条。
+      fillInput(searchInput, '');
+      await sleep(120);
+      fillInput(searchInput, term);
+      // 给 React 过滤渲染留出时间，再 polling 等候选项出现。
+      targetOption = await pollForCountryOption(3500);
+      if (targetOption) break;
+      log(`国家选择：搜索词 "${term}" 未命中可见选项，尝试下一个搜索词...`, 'info');
+    }
+  } else {
+    targetOption = await pollForCountryOption(5000);
+  }
 
   if (targetOption) {
     // Scroll into view so the click registers correctly
@@ -2957,6 +2980,49 @@ async function step6LoginFromPasswordPage(payload, snapshot) {
   });
 }
 
+function findPhoneLoginInput() {
+  const phoneInput = document.querySelector(
+    'input[type="tel"]:not([maxlength="6"]), input[name*="phone" i], input[id*="phone" i], input[name*="PhoneNumberInput" i], input[autocomplete="tel"], input[aria-label*="phone" i], input[aria-label*="电话" i], input[aria-label*="手机" i], input[placeholder*="电话" i], input[placeholder*="手机" i]'
+  );
+  if (phoneInput && isVisibleElement(phoneInput)) {
+    return phoneInput;
+  }
+
+  // Broader fallback: when the page URL is the phone-login variant, treat any non-password/non-hidden
+  // visible input as the phone field (OpenAI's phone login input sometimes has generic attributes).
+  const isPhoneLoginUrl = /\busernameKind=phone_number\b/i.test(location.href);
+  if (isPhoneLoginUrl) {
+    const allInputs = Array.from(document.querySelectorAll('input')).filter(el => {
+      if (!isVisibleElement(el)) return false;
+      const type = (el.getAttribute('type') || 'text').toLowerCase();
+      return !['password', 'hidden', 'checkbox', 'radio', 'submit', 'button'].includes(type);
+    });
+    if (allInputs.length === 1) {
+      return allInputs[0];
+    }
+    // 多个可见输入框时优先 type=tel 的那个（国家选择器有时是 input/combobox）
+    const telInput = allInputs.find(el => (el.getAttribute('type') || '').toLowerCase() === 'tel');
+    if (telInput) {
+      return telInput;
+    }
+  }
+
+  return null;
+}
+
+async function waitForPhoneLoginInput(timeoutMs = 8000, intervalMs = 200) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    throwIfStopped();
+    const input = findPhoneLoginInput();
+    if (input) {
+      return input;
+    }
+    await sleep(intervalMs);
+  }
+  return findPhoneLoginInput();
+}
+
 async function step6LoginFromPhonePage(payload, snapshot) {
   const phone = payload?.phone || '';
   const phoneCountry = payload?.phoneCountry || null;
@@ -2966,26 +3032,11 @@ async function step6LoginFromPhonePage(payload, snapshot) {
 
   log(`步骤 7：检测到手机号登录页，正在填写手机号...`);
 
-  let phoneInput = document.querySelector(
-    'input[type="tel"]:not([maxlength="6"]), input[name*="phone" i], input[id*="phone" i], input[autocomplete="tel"], input[aria-label*="phone" i], input[aria-label*="电话" i], input[aria-label*="手机" i]'
-  );
-  // Broader fallback: when the page URL is the phone-login variant, treat any non-password/non-hidden
-  // visible input as the phone field (OpenAI's phone login input sometimes has generic attributes).
-  if (!phoneInput || !isVisibleElement(phoneInput)) {
-    const isPhoneLoginUrl = /\busernameKind=phone_number\b/i.test(location.href);
-    if (isPhoneLoginUrl) {
-      const allInputs = Array.from(document.querySelectorAll('input')).filter(el => {
-        if (!isVisibleElement(el)) return false;
-        const type = (el.getAttribute('type') || 'text').toLowerCase();
-        return !['password', 'hidden', 'checkbox', 'radio', 'submit', 'button'].includes(type);
-      });
-      if (allInputs.length === 1) {
-        phoneInput = allInputs[0];
-        log(`步骤 7：通过 URL=usernameKind=phone_number 兜底匹配到唯一可见输入框作为手机号输入框（name=${phoneInput.getAttribute('name') || ''} type=${phoneInput.getAttribute('type') || ''}）。`, 'info');
-      } else if (allInputs.length > 1) {
-        log(`步骤 7：URL 是 phone_number 但页面有多个可见输入框（${allInputs.length} 个），请检查。`, 'warn');
-      }
-    }
+  // 手机号登录页有切入动画/异步装载，第一次 query 时 input 可能还未可见，
+  // 在抛错前先 polling 等到 input 出现并可见。
+  let phoneInput = await waitForPhoneLoginInput(8000);
+  if (phoneInput) {
+    log(`步骤 7：通过 polling 匹配到手机号输入框（name=${phoneInput.getAttribute('name') || ''} type=${phoneInput.getAttribute('type') || ''}）。`, 'info');
   }
   if (!phoneInput || !isVisibleElement(phoneInput)) {
     // Dump all inputs for diagnosis
