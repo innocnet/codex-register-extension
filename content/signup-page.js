@@ -593,20 +593,40 @@ async function fillSignupPhoneAndContinue(phone, step, countryCode = null, retry
       log(`步骤 ${step}：找到手机号注册入口"${getActionText(phoneTrigger).slice(0, 30)}"，正在切换...`);
       await humanPause(400, 900);
       simulateClick(phoneTrigger);
+      // 单次点击后给 React 状态机一些时间切换 DOM，再开始 polling。
+      await sleep(800);
+      // chatgpt.com 主页弹窗的"使用电话号码继续"切换有时要好几秒才把 phone input 渲染出来，
+      // 这里 polling 12 秒，且在 4s/8s 时若 trigger 还在原位（说明上次点击没生效），再点一次。
       const triggerWaitStart = Date.now();
-      while (Date.now() - triggerWaitStart < 5000) {
+      let retryClicks = 0;
+      while (Date.now() - triggerWaitStart < 12000) {
         throwIfStopped();
         phoneInput = getSignupPhoneInput();
         if (phoneInput) break;
-        await sleep(200);
+        // 中途若页面已经切到 password_page（少数情况下点击 trigger 后直接进入密码页），按已提交返回。
+        if (isSignupPasswordPage() && getSignupPasswordInput()) {
+          log(`步骤 ${step}：trigger 切换后页面已到密码页，按"手机号已提交"继续后续步骤。`, 'info');
+          return { alreadyOnPasswordPage: true, url: location.href };
+        }
+        const elapsed = Date.now() - triggerWaitStart;
+        if (retryClicks < 2 && elapsed > (retryClicks + 1) * 4000) {
+          const persistTrigger = findPhoneSignupTrigger();
+          if (persistTrigger && isVisibleElement(persistTrigger)) {
+            retryClicks += 1;
+            log(`步骤 ${step}：手机号入口仍可见，第 ${retryClicks} 次重试点击切换（已等待 ${Math.round(elapsed / 1000)}s）...`, 'warn');
+            await humanPause(200, 500);
+            simulateClick(persistTrigger);
+            await sleep(600);
+          }
+        }
+        await sleep(250);
       }
     }
   }
 
   if (!phoneInput) {
-    // 走到这里通常是：autoOpenEntry 点过了，但页面还在导航 / OpenAI 弹窗在 chatgpt.com 上异步装载 /
-    // 或 phone-trigger 一开始没暴露要再等一下。在抛错前做最后一轮 polling，期间持续重试 phone-trigger，
-    // 并允许中途页面切到 password_page 直接返回。
+    // 走到这里：trigger 没找到 / 点完仍渲不出 phone input。最后一轮 polling 8s，期间持续重试 trigger，
+    // 中途若切到密码页直接返回。
     const fallbackStart = Date.now();
     let lastTriggerClickAt = 0;
     while (Date.now() - fallbackStart < 8000) {
@@ -629,9 +649,13 @@ async function fillSignupPhoneAndContinue(phone, step, countryCode = null, retry
   }
 
   if (!phoneInput) {
+    const triggerSeen = Boolean(findPhoneSignupTrigger());
     const diag = getSignupEntryDiagnostics();
-    log(`步骤 ${step} [诊断]: ${JSON.stringify(diag).slice(0, 1200)}`, 'warn');
-    throw new Error(`步骤 ${step}：未找到手机号输入框，页面上也未找到"使用电话号码"入口。URL: ${location.href}`);
+    log(`步骤 ${step} [诊断]: host=${location.hostname} triggerSeen=${triggerSeen} ${JSON.stringify(diag).slice(0, 1200)}`, 'warn');
+    const hint = triggerSeen
+      ? '已点击"使用电话号码"入口（且做过最多 2 次重试点击）但仍未渲染出手机号输入框'
+      : '当前页面既没有手机号输入框，也没有"使用电话号码"切换入口';
+    throw new Error(`步骤 ${step}：未找到手机号输入框（${hint}）。URL: ${location.href}`);
   }
 
   // Select country before filling phone number
