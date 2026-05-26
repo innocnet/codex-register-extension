@@ -604,6 +604,33 @@ async function fillSignupPhoneAndContinue(phone, step, countryCode = null, retry
   }
 
   if (!phoneInput) {
+    // 走到这里通常是：autoOpenEntry 点过了，但页面还在导航 / OpenAI 弹窗在 chatgpt.com 上异步装载 /
+    // 或 phone-trigger 一开始没暴露要再等一下。在抛错前做最后一轮 polling，期间持续重试 phone-trigger，
+    // 并允许中途页面切到 password_page 直接返回。
+    const fallbackStart = Date.now();
+    let lastTriggerClickAt = 0;
+    while (Date.now() - fallbackStart < 8000) {
+      throwIfStopped();
+      if (isSignupPasswordPage() && getSignupPasswordInput()) {
+        log(`步骤 ${step}：页面已切到密码页，按"手机号已提交"继续后续步骤。`, 'info');
+        return { alreadyOnPasswordPage: true, url: location.href };
+      }
+      phoneInput = getSignupPhoneInput();
+      if (phoneInput) break;
+      const lateTrigger = findPhoneSignupTrigger();
+      if (lateTrigger && Date.now() - lastTriggerClickAt >= 1500) {
+        lastTriggerClickAt = Date.now();
+        log(`步骤 ${step}：再次发现手机号入口，正在切换...`, 'info');
+        await humanPause(250, 600);
+        simulateClick(lateTrigger);
+      }
+      await sleep(250);
+    }
+  }
+
+  if (!phoneInput) {
+    const diag = getSignupEntryDiagnostics();
+    log(`步骤 ${step} [诊断]: ${JSON.stringify(diag).slice(0, 1200)}`, 'warn');
     throw new Error(`步骤 ${step}：未找到手机号输入框，页面上也未找到"使用电话号码"入口。URL: ${location.href}`);
   }
 
@@ -1055,7 +1082,10 @@ function getSignupPhoneInput() {
     'input[type="tel"]:not([maxlength="6"])',
     'input[name*="phone" i]',
     'input[id*="phone" i]',
+    'input[name*="PhoneNumberInput" i]',
     'input[autocomplete="tel"]',
+    'input[placeholder*="电话" i]',
+    'input[placeholder*="手机" i]',
   ];
   for (const selector of selectors) {
     const input = document.querySelector(selector);
@@ -1216,21 +1246,72 @@ async function selectPhoneCountry(countryCode) {
     return null;
   }
 
-  async function pollForCountryOption(timeoutMs = 5000, intervalMs = 200) {
+  function findScrollableListboxContainer() {
+    const candidates = [
+      document.querySelector('[role="listbox"]:not([aria-hidden="true"])'),
+      document.querySelector('[role="dialog"]:not([aria-hidden="true"]) [role="listbox"]'),
+      document.querySelector('[role="dialog"]:not([aria-hidden="true"]) ul'),
+      document.querySelector('[role="dialog"]:not([aria-hidden="true"]) [class*="scroll" i]'),
+      document.querySelector('[role="dialog"]:not([aria-hidden="true"])'),
+    ].filter(Boolean);
+    for (const candidate of candidates) {
+      if (!isVisibleElement(candidate)) continue;
+      let node = candidate;
+      // 向上/向下查找一个真正可滚动的容器（virtualized list 的 scroll viewport 常常嵌在 listbox 内）
+      const stack = [candidate, ...Array.from(candidate.querySelectorAll('*')).slice(0, 30)];
+      for (const el of stack) {
+        try {
+          const style = window.getComputedStyle(el);
+          const canScroll = (style.overflowY === 'auto' || style.overflowY === 'scroll' || style.overflow === 'auto' || style.overflow === 'scroll');
+          if (canScroll && el.scrollHeight > el.clientHeight + 4) {
+            return el;
+          }
+        } catch (_) { /* ignore */ }
+      }
+      node = candidate;
+      if (node.scrollHeight > node.clientHeight + 4) return node;
+    }
+    return null;
+  }
+
+  async function pollForCountryOption(timeoutMs = 5000, intervalMs = 200, { withScroll = false } = {}) {
     const start = Date.now();
+    const scrollContainer = withScroll ? findScrollableListboxContainer() : null;
+    let scrollAttempts = 0;
+    let lastScrollAt = 0;
     while (Date.now() - start < timeoutMs) {
       throwIfStopped();
       const option = findCountryOptionInDropdown();
       if (option) return option;
+      if (scrollContainer && Date.now() - lastScrollAt > 250) {
+        lastScrollAt = Date.now();
+        try {
+          // 滚到底后回到顶，循环驱动 virtualized list 渲染所有项。
+          const atBottom = scrollContainer.scrollTop + scrollContainer.clientHeight >= scrollContainer.scrollHeight - 4;
+          if (atBottom) {
+            scrollContainer.scrollTop = 0;
+          } else {
+            scrollContainer.scrollTop = scrollContainer.scrollTop + Math.max(120, Math.floor(scrollContainer.clientHeight * 0.6));
+          }
+          scrollAttempts += 1;
+        } catch (_) { /* ignore */ }
+      }
       await sleep(intervalMs);
+    }
+    if (withScroll && scrollAttempts > 0) {
+      log(`国家选择：滚动 listbox 共 ${scrollAttempts} 次仍未命中目标，准备返回。`, 'info');
     }
     return findCountryOptionInDropdown();
   }
 
   // If dropdown has a search input, type a search term to filter the (often virtualized) list.
   const searchInput = document.querySelector(
-    '[role="dialog"] input, [role="listbox"] input, [role="listbox"] ~ * input, ' +
-    'input[placeholder*="搜索" i], input[placeholder*="search" i], input[placeholder*="country" i], input[placeholder*="国家" i]'
+    '[role="dialog"] input[type="search"], [role="dialog"] input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]), ' +
+    '[role="listbox"] input, [role="listbox"] ~ * input, ' +
+    '[role="searchbox"], input[role="searchbox"], ' +
+    'input[type="search"], ' +
+    'input[placeholder*="搜索" i], input[placeholder*="search" i], input[placeholder*="country" i], input[placeholder*="国家" i], ' +
+    'input[aria-label*="search" i], input[aria-label*="搜索" i], input[aria-label*="country" i], input[aria-label*="国家" i]'
   );
   // 优先尝试拨号前缀（最稳，不依赖页面语言），再 fallback 中文/英文国家名。
   const countrySearchTermsZh = { 151: '智利', 73: '巴西', 16: '英国', 187: '美国' };
@@ -1253,8 +1334,15 @@ async function selectPhoneCountry(countryCode) {
       if (targetOption) break;
       log(`国家选择：搜索词 "${term}" 未命中可见选项，尝试下一个搜索词...`, 'info');
     }
+    if (!targetOption) {
+      // 搜索全部失败，清空搜索，回到完整列表后滚动 virtualized list 兜底。
+      fillInput(searchInput, '');
+      await sleep(250);
+      targetOption = await pollForCountryOption(6000, 200, { withScroll: true });
+    }
   } else {
-    targetOption = await pollForCountryOption(5000);
+    // 没有搜索框（OpenAI 当前版本下拉就是这样）：直接 polling 同时滚动 listbox，让远处国家被 virtualized list 渲染出来。
+    targetOption = await pollForCountryOption(8000, 200, { withScroll: true });
   }
 
   if (targetOption) {
