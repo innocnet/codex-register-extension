@@ -419,6 +419,15 @@ async function waitForSignupEntryState(options = {}) {
       return snapshot;
     }
 
+    // 防御：modal 已经打开但 inspectSignupEntryState 仍判 entry_home —— 主页背景层的
+    // "免费注册" 按钮在 modal 打开后通常仍是 isVisible=true，于是 findSignupEntryTrigger()
+    // 命中导致状态被误判为 entry_home。如果此时 modal 内的 phone trigger
+    // ("使用电话号码继续") 已经可见，**绝不能**再次点击 entry trigger —— 该按钮是
+    // toggle，再点一次会关掉 modal，把流程带入半开错乱状态。
+    if (snapshot.state === 'entry_home' && autoOpenEntry && findPhoneSignupTrigger()) {
+      return { state: 'phone_entry', url: location.href };
+    }
+
     if (snapshot.state === 'entry_home') {
       if (!autoOpenEntry) {
         return snapshot;
@@ -547,6 +556,17 @@ async function fillSignupPhoneAndContinue(phone, step, countryCode = null, retry
 
   const formattedPhone = formatHeroSmsPhoneNumber(phone, countryCode);
 
+  // 已经在创建账户密码页（手机号上次已成功提交并触发了跳转）：直接返回 alreadyOnPasswordPage，
+  // 不要再去找 phone input / country selector / continue button — 此时密码页上的 readonly tel
+  // 显示框会被 getSignupPhoneInput() 误识别为可填写的 phone input，"显示密码" 按钮会被
+  // findPhoneCountrySelector() 误识别为国家下拉，进而点错按钮、空跑 8 秒 polling。
+  // 与原行为兼容：原 line 584 也有同样语义的早退（基于 snapshot.state），这里只是提前到
+  // selectPhoneCountry 之前判断，避免误进 selectPhoneCountry 的脏路径。
+  if (isSignupPasswordPage() && getSignupPasswordInput()) {
+    log(`步骤 ${step}：当前已在创建密码页，手机号已提交完成，跳过后续填写流程。`, 'info');
+    return { alreadyOnPasswordPage: true, url: location.href };
+  }
+
   // When retrying after number replacement, navigate back to phone entry form.
   if (retryPhoneEntry && !getSignupPhoneInput() && !findPhoneSignupTrigger()) {
     const onLoginPage = /\/log-in\/password(?:[/?#]|$)/i.test(location.pathname);
@@ -665,6 +685,13 @@ async function fillSignupPhoneAndContinue(phone, step, countryCode = null, retry
     if (countryResult.selected) {
       log(`步骤 ${step}：国家已选择：${countryResult.country}`);
       await sleep(300);
+    } else if (countryResult.reason === 'react_state_not_updated') {
+      // 国家选择点击成功但 React state 未同步：当前 selector 仍指向旧国家（通常是 +1 美国），
+      // 继续填手机号会触发 OpenAI "电话号码无效"，浪费当前 HeroSMS 号。
+      // 抛 PHONE_SIGNUP_REJECTED 让 background 标记 smsRestartRequired 重启 step 1，
+      // 重开 modal + 重选国家。
+      log(`步骤 ${step}：国家选择未生效，需要重启注册流程重新选国家。`, 'warn');
+      throw new Error(`${PHONE_SIGNUP_REJECTED_PREFIX}country_state_not_updated`);
     }
   }
 
@@ -1206,6 +1233,217 @@ async function selectPhoneCountry(countryCode) {
   }
   log(`找到国家选择器：tag=${selector.tagName} role=${selector.getAttribute('role') || ''} text="${getActionText(selector).slice(0, 40)}"`);
 
+  function getCurrentCountrySelectionText() {
+    const currentSelector = findPhoneCountrySelector() || selector;
+    if (!currentSelector) return '';
+    if (currentSelector.tagName === 'SELECT') {
+      const selectedOption = currentSelector.selectedOptions?.[0]
+        || currentSelector.options?.[currentSelector.selectedIndex]
+        || null;
+      return getActionText(selectedOption) || selectedOption?.textContent || selectedOption?.value || getActionText(currentSelector);
+    }
+    return getActionText(currentSelector);
+  }
+
+  function isExpectedCountryText(text) {
+    const normalizedText = String(text || '').trim();
+    if (!normalizedText) return false;
+    if (dialingCode) {
+      const collapsed = normalizedText.replace(/\s/g, '');
+      if (collapsed.includes(`+${dialingCode}`) || collapsed.includes(`+(${dialingCode})`)) {
+        return true;
+      }
+    }
+    if (namePattern && namePattern.test(normalizedText)) {
+      return true;
+    }
+    return false;
+  }
+
+  function getCountryElementClickRect(el) {
+    if (!el || typeof el.getBoundingClientRect !== 'function') return null;
+    const rect = el.getBoundingClientRect();
+    const width = Number(rect.width || 0);
+    const height = Number(rect.height || 0);
+    const left = Number(rect.left || 0);
+    const top = Number(rect.top || 0);
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+    return {
+      centerX: left + width / 2,
+      centerY: top + height / 2,
+      width,
+      height,
+    };
+  }
+
+  async function clickCountryOption(option) {
+    try { option.scrollIntoView?.({ block: 'nearest', behavior: 'instant' }); } catch (_) { /* ignore */ }
+    await sleep(80);
+    if (typeof sendBackgroundRequest === 'function') {
+      const rect = getCountryElementClickRect(option);
+      if (rect) {
+        try {
+          log(`国家选择：尝试 debugger 坐标点击 ${describeCountryElement(option)}`, 'info');
+          const clickResult = await sendBackgroundRequest('AUTH_DEBUGGER_CLICK_REQUEST', {
+            rect,
+            label: '国家选择',
+          });
+          if (clickResult?.ok) {
+            await sleep(250);
+            return { method: 'debugger' };
+          }
+          log(`国家选择：debugger 坐标点击未确认成功，准备回退 DOM click：${clickResult?.error || 'unknown'}`, 'warn');
+        } catch (err) {
+          log(`国家选择：debugger 坐标点击失败，准备回退 DOM click：${err.message}`, 'warn');
+        }
+      } else {
+        log(`国家选择：候选项坐标无效，准备回退 DOM click：${describeCountryElement(option)}`, 'warn');
+      }
+    }
+    simulateClick(option);
+    await sleep(250);
+    return { method: 'dom' };
+  }
+
+  async function openCountrySelector() {
+    simulateClick(selector);
+    await sleep(750);
+  }
+
+  function describeCountryElement(el) {
+    if (!el) return 'null';
+    const rect = typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null;
+    const text = getActionText(el);
+    return [
+      `tag=${(el.tagName || '').toLowerCase()}`,
+      `role=${el.getAttribute?.('role') || ''}`,
+      `text="${text.slice(0, 80)}"`,
+      `len=${text.length}`,
+      rect ? `size=${Math.round(rect.width || 0)}x${Math.round(rect.height || 0)}` : 'size=unknown',
+    ].join(' ');
+  }
+
+  function getCountryCandidateScore(el) {
+    if (el === selector) return null;
+    if (!isVisibleElement(el)) return null;
+    const rect = el.getBoundingClientRect();
+    const height = Math.round(rect.height || 0);
+    if (height < 16) return null;
+    if (height > 80) return null;
+    const text = getActionText(el);
+    if (!text) return null;
+    if (text.length > 160) return null;
+    const dialMatch = dialCodeMatches(text);
+    const nameMatch = Boolean(namePattern && namePattern.test(text));
+    if (!dialMatch && !nameMatch) return null;
+
+    const width = Math.round(rect.width || 0);
+    const area = width * height;
+    let score = dialMatch ? 1000 : 900;
+    score -= Math.min(Math.round(area / 40), 300);
+    score -= Math.min(text.length * 2, 120);
+    if (text.length > 40) score -= 80;
+    if ((el.getAttribute?.('role') || '') === 'option') score += 40;
+    if ((el.tagName || '').toLowerCase() === 'li') score += 20;
+
+    return {
+      score,
+      reason: dialMatch ? 'dialing_code' : 'country_name',
+    };
+  }
+
+  function getCountryCandidateReason(el) {
+    const info = getCountryCandidateScore(el);
+    if (info) return `match=${info.reason} score=${info.score}`;
+    if (el === selector) return 'skip=selector';
+    if (!isVisibleElement(el)) return 'skip=not_visible';
+    const rect = el.getBoundingClientRect();
+    const height = Math.round(rect.height || 0);
+    if (height < 16) return `skip=height<16(${height})`;
+    if (height > 80) return `skip=height>80(${height})`;
+    const text = getActionText(el);
+    if (!text) return 'skip=empty_text';
+    if (text.length > 160) return `skip=text>160(${text.length})`;
+    return 'skip=text_mismatch';
+  }
+
+  function chooseBestCountryCandidate(candidates) {
+    let best = null;
+    let bestInfo = null;
+    for (const el of candidates) {
+      const info = getCountryCandidateScore(el);
+      if (!info) continue;
+      if (!bestInfo || info.score > bestInfo.score) {
+        best = el;
+        bestInfo = info;
+      }
+    }
+    return best ? { element: best, info: bestInfo } : null;
+  }
+
+  function collectCountryCandidateSummary(candidates, maxSamples = 6) {
+    const samples = [];
+    let match = null;
+    let matchReason = '';
+    let matchScore = null;
+    for (const el of candidates) {
+      const info = getCountryCandidateScore(el);
+      const reason = info ? `match=${info.reason} score=${info.score}` : getCountryCandidateReason(el);
+      if (info && (!match || info.score > matchScore)) {
+        match = el;
+        matchReason = info.reason;
+        matchScore = info.score;
+      }
+      if (samples.length < maxSamples) {
+        samples.push(`${describeCountryElement(el)} -> ${reason}`);
+      }
+    }
+    return {
+      count: candidates.length,
+      match,
+      matchReason,
+      samples,
+    };
+  }
+
+  function logCountrySelectionDiagnostics(stage, {
+    searchInput = null,
+    searchTerm = '',
+    withScroll = false,
+  } = {}) {
+    const ariaCandidates = Array.from(document.querySelectorAll(
+      '[role="option"], li[data-value], li[role="menuitem"], ' +
+      '[role="listbox"] li, [role="listbox"] button, [role="listbox"] [role="option"]'
+    ));
+    const overlay = document.querySelector(
+      '[role="dialog"]:not([aria-hidden="true"]), ' +
+      '[role="listbox"]:not([aria-hidden="true"])'
+    );
+    const overlayCandidates = overlay
+      ? Array.from(overlay.querySelectorAll('button, li, div, [role="button"]'))
+      : [];
+    const scrollContainer = withScroll ? findScrollableListboxContainer() : null;
+    const searchSummary = searchInput
+      ? `${describeCountryElement(searchInput)} value="${String(searchInput.value || '').slice(0, 40)}"`
+      : '未找到';
+    const scrollSummary = scrollContainer
+      ? `${describeCountryElement(scrollContainer)} scroll=${Math.round(scrollContainer.scrollTop || 0)}/${Math.round(scrollContainer.clientHeight || 0)}/${Math.round(scrollContainer.scrollHeight || 0)}`
+      : '无';
+    const ariaSummary = collectCountryCandidateSummary(ariaCandidates);
+    const overlaySummary = collectCountryCandidateSummary(overlayCandidates);
+    const level = ariaSummary.match || overlaySummary.match ? 'info' : 'warn';
+
+    log(`国家选择诊断[${stage}] 搜索词="${searchTerm || '无'}" 搜索框=${searchSummary} 滚动容器=${scrollSummary}`, level);
+    log(
+      `国家选择诊断[${stage}] ARIA 候选=${ariaSummary.count}${ariaSummary.match ? ` 命中=${describeCountryElement(ariaSummary.match)} (${ariaSummary.matchReason})` : ''}${ariaSummary.samples.length ? ` 样例=${ariaSummary.samples.join(' || ')}` : ''}${ariaSummary.count > ariaSummary.samples.length ? ` ... 其余 ${ariaSummary.count - ariaSummary.samples.length} 个已省略` : ''}`,
+      level
+    );
+    log(
+      `国家选择诊断[${stage}] OVERLAY 候选=${overlaySummary.count}${overlaySummary.match ? ` 命中=${describeCountryElement(overlaySummary.match)} (${overlaySummary.matchReason})` : ''}${overlaySummary.samples.length ? ` 样例=${overlaySummary.samples.join(' || ')}` : ''}${overlaySummary.count > overlaySummary.samples.length ? ` ... 其余 ${overlaySummary.count - overlaySummary.samples.length} 个已省略` : ''}`,
+      level
+    );
+  }
+
   // If it's a select element
   if (selector.tagName === 'SELECT') {
     const options = Array.from(selector.querySelectorAll('option'));
@@ -1226,8 +1464,7 @@ async function selectPhoneCountry(countryCode) {
   }
 
   // If it's a button/combobox, click to open dropdown
-  simulateClick(selector);
-  await sleep(750);
+  await openCountrySelector();
 
   function dialCodeMatches(text) {
     if (!dialingCode) return false;
@@ -1237,9 +1474,7 @@ async function selectPhoneCountry(countryCode) {
   }
 
   function elementMatchesCountry(el) {
-    if (!isVisibleElement(el)) return false;
-    const text = getActionText(el);
-    return dialCodeMatches(text) || Boolean(namePattern && namePattern.test(text));
+    return Boolean(getCountryCandidateScore(el));
   }
 
   function findCountryOptionInDropdown() {
@@ -1248,9 +1483,8 @@ async function selectPhoneCountry(countryCode) {
       '[role="option"], li[data-value], li[role="menuitem"], ' +
       '[role="listbox"] li, [role="listbox"] button, [role="listbox"] [role="option"]'
     );
-    for (const el of ariaCandidates) {
-      if (el !== selector && elementMatchesCountry(el)) return el;
-    }
+    const ariaChoice = chooseBestCountryCandidate(ariaCandidates);
+    if (ariaChoice) return ariaChoice.element;
 
     // Strategy 2: button / li / div inside a visible dialog or overlay
     const overlay = document.querySelector(
@@ -1259,13 +1493,8 @@ async function selectPhoneCountry(countryCode) {
     );
     const searchRoot = overlay || document.body;
     const overlayCandidates = searchRoot.querySelectorAll('button, li, div, [role="button"]');
-    for (const el of overlayCandidates) {
-      if (el === selector) continue;
-      // Only match elements that are leaf-level or have a reasonable row height
-      const rect = el.getBoundingClientRect();
-      if (!isVisibleElement(el) || rect.height < 16) continue;
-      if (elementMatchesCountry(el)) return el;
-    }
+    const overlayChoice = chooseBestCountryCandidate(overlayCandidates);
+    if (overlayChoice) return overlayChoice.element;
 
     return null;
   }
@@ -1298,45 +1527,45 @@ async function selectPhoneCountry(countryCode) {
     return null;
   }
 
-  async function pollForCountryOption(timeoutMs = 5000, intervalMs = 200, { withScroll = false } = {}) {
+  async function pollForCountryOption(timeoutMs = 5000, intervalMs = 150, { withScroll = false } = {}) {
     const start = Date.now();
     const scrollContainer = withScroll ? findScrollableListboxContainer() : null;
     let scrollAttempts = 0;
-    let lastScrollAt = 0;
+
     while (Date.now() - start < timeoutMs) {
       throwIfStopped();
       const option = findCountryOptionInDropdown();
       if (option) return option;
-      if (scrollContainer && Date.now() - lastScrollAt > 250) {
-        lastScrollAt = Date.now();
+      if (scrollContainer) {
         try {
-          // 滚到底后回到顶，循环驱动 virtualized list 渲染所有项。
           const atBottom = scrollContainer.scrollTop + scrollContainer.clientHeight >= scrollContainer.scrollHeight - 4;
-          if (atBottom) {
-            scrollContainer.scrollTop = 0;
-          } else {
-            scrollContainer.scrollTop = scrollContainer.scrollTop + Math.max(120, Math.floor(scrollContainer.clientHeight * 0.6));
-          }
+          if (atBottom) break;
+          scrollContainer.scrollTop += 80;
           scrollAttempts += 1;
         } catch (_) { /* ignore */ }
       }
       await sleep(intervalMs);
     }
+
     if (withScroll && scrollAttempts > 0) {
       log(`国家选择：滚动 listbox 共 ${scrollAttempts} 次仍未命中目标，准备返回。`, 'info');
     }
     return findCountryOptionInDropdown();
   }
 
-  // If dropdown has a search input, type a search term to filter the (often virtualized) list.
-  const searchInput = document.querySelector(
-    '[role="dialog"] input[type="search"], [role="dialog"] input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]), ' +
-    '[role="listbox"] input, [role="listbox"] ~ * input, ' +
-    '[role="searchbox"], input[role="searchbox"], ' +
-    'input[type="search"], ' +
-    'input[placeholder*="搜索" i], input[placeholder*="search" i], input[placeholder*="country" i], input[placeholder*="国家" i], ' +
-    'input[aria-label*="search" i], input[aria-label*="搜索" i], input[aria-label*="country" i], input[aria-label*="国家" i]'
-  );
+  function getCountrySearchInput() {
+    return document.querySelector(
+      '[role="dialog"] input[type="search"], ' +
+      '[role="dialog"] input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not([type="tel"]):not([name*="PhoneNumber" i]):not([autocomplete="tel"]), ' +
+      '[role="listbox"] input:not([type="tel"]):not([name*="PhoneNumber" i]), ' +
+      '[role="listbox"] ~ * input:not([type="tel"]):not([name*="PhoneNumber" i]), ' +
+      '[role="searchbox"], input[role="searchbox"], ' +
+      'input[type="search"], ' +
+      'input[placeholder*="搜索" i], input[placeholder*="search" i], input[placeholder*="country" i], input[placeholder*="国家" i], ' +
+      'input[aria-label*="search" i], input[aria-label*="搜索" i], input[aria-label*="country" i], input[aria-label*="国家" i]'
+    );
+  }
+
   // 优先尝试拨号前缀（最稳，不依赖页面语言），再 fallback 中文/英文国家名。
   const countrySearchTermsZh = { 151: '智利', 73: '巴西', 16: '英国', 187: '美国' };
   const countrySearchTermsEn = { 151: 'Chile', 73: 'Brazil', 16: 'United Kingdom', 187: 'United States' };
@@ -1345,42 +1574,115 @@ async function selectPhoneCountry(countryCode) {
   if (countrySearchTermsZh[countryCode]) searchTerms.push(countrySearchTermsZh[countryCode]);
   if (countrySearchTermsEn[countryCode]) searchTerms.push(countrySearchTermsEn[countryCode]);
 
-  let targetOption = null;
-  if (searchInput && isVisibleElement(searchInput) && searchTerms.length) {
-    for (const term of searchTerms) {
-      throwIfStopped();
-      // 清空再填，避免上一次搜索词残留导致过滤命中 0 条。
-      fillInput(searchInput, '');
-      await sleep(120);
-      fillInput(searchInput, term);
-      // 给 React 过滤渲染留出时间，再 polling 等候选项出现。
-      targetOption = await pollForCountryOption(3500);
-      if (targetOption) break;
-      log(`国家选择：搜索词 "${term}" 未命中可见选项，尝试下一个搜索词...`, 'info');
+  async function findCountryTargetOption() {
+    const searchInput = getCountrySearchInput();
+    let targetOption = null;
+    log(`国家选择：搜索框=${searchInput ? describeCountryElement(searchInput) : '未找到'}；将尝试搜索词=${searchTerms.length ? searchTerms.map((term) => `"${term}"`).join(' / ') : '无'}`);
+    if (searchInput && isVisibleElement(searchInput) && searchTerms.length) {
+      for (const term of searchTerms) {
+        throwIfStopped();
+        log(`国家选择：正在使用搜索词 "${term}" 过滤国家列表...`);
+        // 清空再填，避免上一次搜索词残留导致过滤命中 0 条。
+        fillInput(searchInput, '');
+        await sleep(120);
+        fillInput(searchInput, term);
+        // 给 React 过滤渲染留出时间，再 polling 等候选项出现。
+        targetOption = await pollForCountryOption(3500);
+        if (targetOption) break;
+        log(`国家选择：搜索词 "${term}" 未命中可见选项，尝试下一个搜索词...`, 'info');
+        logCountrySelectionDiagnostics(`搜索词 "${term}" 未命中`, {
+          searchInput,
+          searchTerm: term,
+        });
+      }
+      if (!targetOption) {
+        // 搜索全部失败，清空搜索，回到完整列表后滚动 virtualized list 兜底。
+        log('国家选择：搜索词全部失败，清空搜索框并切回完整列表兜底。', 'warn');
+        fillInput(searchInput, '');
+        await sleep(250);
+        targetOption = await pollForCountryOption(6000, 200, { withScroll: true });
+      }
+    } else {
+      // 没有搜索框（OpenAI 当前版本下拉就是这样）：直接 polling 同时滚动 listbox，让远处国家被 virtualized list 渲染出来。
+      log('国家选择：未找到可用搜索框，直接使用滚动扫描兜底。', 'info');
+      targetOption = await pollForCountryOption(8000, 200, { withScroll: true });
     }
+
     if (!targetOption) {
-      // 搜索全部失败，清空搜索，回到完整列表后滚动 virtualized list 兜底。
-      fillInput(searchInput, '');
-      await sleep(250);
-      targetOption = await pollForCountryOption(6000, 200, { withScroll: true });
+      logCountrySelectionDiagnostics('最终未命中目标国家', {
+        searchInput,
+        searchTerm: searchTerms.join(' / '),
+        withScroll: true,
+      });
     }
-  } else {
-    // 没有搜索框（OpenAI 当前版本下拉就是这样）：直接 polling 同时滚动 listbox，让远处国家被 virtualized list 渲染出来。
-    targetOption = await pollForCountryOption(8000, 200, { withScroll: true });
+
+    return targetOption;
   }
+
+  let targetOption = await findCountryTargetOption();
 
   if (targetOption) {
-    // Scroll into view so the click registers correctly
-    try { targetOption.scrollIntoView({ block: 'nearest', behavior: 'instant' }); } catch (_) { /* ignore */ }
-    await humanPause(200, 500);
-    simulateClick(targetOption);
-    await sleep(300);
-    log(`已选择国家：${getActionText(targetOption)}`);
-    return { selected: true, country: getActionText(targetOption) };
+    try { targetOption.scrollIntoView({ block: 'nearest', behavior: 'instant' }); } catch (_) {}
+    const expectedCountry = getActionText(targetOption);
+    log(`国家选择：命中候选项，准备点击 ${describeCountryElement(targetOption)}`);
+
+    async function confirmSelection(timeoutMs = 2800, intervalMs = 200) {
+      const start = Date.now();
+      let currentCountry = '';
+      let attemptCount = 0;
+      let lastLoggedCountry = null;
+      while (Date.now() - start < timeoutMs) {
+        await sleep(intervalMs);
+        attemptCount += 1;
+        currentCountry = getCurrentCountrySelectionText();
+        if (currentCountry !== lastLoggedCountry) {
+          log(`国家选择：确认第 ${attemptCount} 次，当前选择文本="${currentCountry || '空'}"`, 'info');
+          lastLoggedCountry = currentCountry;
+        }
+        if (isExpectedCountryText(currentCountry)) {
+          return { ok: true, country: currentCountry || expectedCountry };
+        }
+      }
+      log(`国家选择：确认超时，共 ${attemptCount} 次，最后文本="${currentCountry || '空'}"`, 'warn');
+      return { ok: false, currentCountry, expectedCountry, attemptCount };
+    }
+
+    await clickCountryOption(targetOption);
+    let confirmation = await confirmSelection(2800, 200);
+    if (!confirmation.ok) {
+      log(`国家选择：首次点击后当前仍显示 "${confirmation.currentCountry || '空'}"，准备重试...`, 'warn');
+      try {
+        for (let retryAttempt = 0; retryAttempt < 2 && !confirmation.ok; retryAttempt += 1) {
+          log(`国家选择：进入第 ${retryAttempt + 1} 次重试，重新打开下拉并重新寻找候选。`, 'warn');
+          await openCountrySelector();
+          targetOption = await findCountryTargetOption();
+          if (!targetOption) {
+            continue;
+          }
+          try { targetOption.scrollIntoView({ block: 'nearest', behavior: 'instant' }); } catch (_) {}
+          log(`国家选择：重试命中候选项 ${describeCountryElement(targetOption)}`, 'info');
+          await clickCountryOption(targetOption);
+          confirmation = await confirmSelection(2800, 200);
+        }
+      } catch (_) { /* ignore */ }
+    }
+
+    if (!confirmation.ok) {
+      log(`国家选择：点击后页面仍未切到目标国家，当前="${confirmation.currentCountry || '空'}" 目标="${confirmation.expectedCountry}"`, 'warn');
+      return {
+        selected: false,
+        reason: 'react_state_not_updated',
+        expectedCountry: confirmation.expectedCountry || expectedCountry,
+        currentCountry: confirmation.currentCountry || '',
+      };
+    }
+
+    log(`已选择国家：${confirmation.country}`);
+    return { selected: true, country: confirmation.country };
   }
 
-  // Close dropdown if we couldn't find the option
-  simulateClick(selector);
+  // Close with Escape to avoid accidentally confirming highlighted item
+  try { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); } catch (_) {}
   await sleep(200);
 
   log(`未找到匹配的国家选项（国家代码 ${countryCode}，拨号前缀 +${dialingCode || '?'}），跳过国家选择。URL: ${location.href}`, 'warn');

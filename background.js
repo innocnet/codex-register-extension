@@ -4875,13 +4875,14 @@ async function humanStepDelay(min = HUMAN_STEP_DELAY_MIN, max = HUMAN_STEP_DELAY
   await sleepWithStop(duration);
 }
 
-async function clickWithDebugger(tabId, rect) {
+async function clickWithDebugger(tabId, rect, actionLabel = '步骤 9 的调试器兜底点击') {
   throwIfStopped();
+  const label = actionLabel || '步骤 9 的调试器兜底点击';
   if (!tabId) {
     throw new Error('未找到用于调试点击的认证页面标签页。');
   }
   if (!rect || !Number.isFinite(rect.centerX) || !Number.isFinite(rect.centerY)) {
-    throw new Error('步骤 9 的调试器兜底点击需要有效的按钮坐标。');
+    throw new Error(`${label}需要有效的按钮坐标。`);
   }
 
   const target = { tabId };
@@ -4889,7 +4890,7 @@ async function clickWithDebugger(tabId, rect) {
     await chrome.debugger.attach(target, '1.3');
   } catch (err) {
     throw new Error(
-      `步骤 9 的调试器兜底点击附加失败：${err.message}。` +
+      `${label}附加失败：${err.message}。` +
       '如果认证页标签已打开 DevTools，请先关闭后重试。'
     );
   }
@@ -6540,6 +6541,7 @@ const step2Executor = self.MultiPageBackgroundStep2?.createStep2Executor({
   ensureSignupEntryPageReady,
   ensureSignupPostEmailPageReadyInTab,
   getTabId,
+  isRetryableContentScriptTransportError,
   isTabAlive,
   phoneVerifyRequestNumber,
   phoneVerifyReplaceNumber,

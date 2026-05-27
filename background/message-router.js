@@ -690,6 +690,24 @@
           }
         }
 
+        case 'AUTH_DEBUGGER_CLICK_REQUEST': {
+          const tabId = sender.tab?.id;
+          if (!tabId) {
+            return { error: '认证页调试器点击失败：未找到标签页 ID。' };
+          }
+          const rect = message.payload?.rect;
+          if (!rect || !Number.isFinite(rect.centerX) || !Number.isFinite(rect.centerY)) {
+            return { error: '认证页调试器点击失败：未提供有效的坐标。' };
+          }
+          const label = message.payload?.label || '认证页调试器点击';
+          try {
+            await clickWithDebugger(tabId, rect, `${label}：`);
+            return { ok: true };
+          } catch (err) {
+            return { error: `认证页调试器点击失败：${err.message}` };
+          }
+        }
+
         case 'ACCOUNTS_REEXPORT': {
           return await reexportAccountsFile();
         }

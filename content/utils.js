@@ -340,6 +340,40 @@ function reportError(step, errorMessage) {
 }
 
 /**
+ * 在 el.click() / dispatchEvent('click') 之前先派发完整的 pointer + mouse 事件序列，
+ * 以便 React/Radix/Headless UI 这类挂在 onPointerDown / onMouseDown 上的组件能正确响应。
+ * 仅给"click"路径加前置 pointer/mouse 序列；requestSubmit 路径走表单提交，不需要。
+ *
+ * 兼容性说明：
+ * - 已有调用点的元素都是普通 button/a/[role=button]，接受 pointer/mouse 事件不会产生副作用。
+ * - 失败时静默忽略，回退到原 click() 行为，与之前保持一致。
+ * @param {Element} el
+ */
+function dispatchPointerAndMouseSequence(el) {
+  if (!el || typeof el.dispatchEvent !== 'function') return;
+  const rect = typeof el.getBoundingClientRect === 'function'
+    ? el.getBoundingClientRect()
+    : { left: 0, top: 0, width: 0, height: 0 };
+  const clientX = (rect.left || 0) + (rect.width || 0) / 2;
+  const clientY = (rect.top || 0) + (rect.height || 0) / 2;
+  const downInit = { bubbles: true, cancelable: true, composed: true, clientX, clientY, button: 0, buttons: 1 };
+  const upInit = { ...downInit, buttons: 0 };
+
+  try {
+    if (typeof PointerEvent === 'function') {
+      el.dispatchEvent(new PointerEvent('pointerdown', { ...downInit, pointerType: 'mouse', isPrimary: true }));
+    }
+    el.dispatchEvent(new MouseEvent('mousedown', downInit));
+    if (typeof PointerEvent === 'function') {
+      el.dispatchEvent(new PointerEvent('pointerup', { ...upInit, pointerType: 'mouse', isPrimary: true }));
+    }
+    el.dispatchEvent(new MouseEvent('mouseup', upInit));
+  } catch {
+    // 静默：dispatch 失败时回退到原生 click()，行为与改动前一致
+  }
+}
+
+/**
  * Simulate a click with proper event dispatching.
  * @param {Element} el
  */
@@ -365,9 +399,11 @@ function simulateClick(el) {
     form.requestSubmit(el);
   } else if (typeof el.click === 'function') {
     method = 'click';
+    dispatchPointerAndMouseSequence(el);
     el.click();
   } else {
     method = 'dispatchEvent';
+    dispatchPointerAndMouseSequence(el);
     el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
   }
 
