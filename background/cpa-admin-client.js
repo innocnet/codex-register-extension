@@ -87,7 +87,19 @@
       return { disabled: true };
     }
 
-    return { origin, authHeader, listAccounts, probeAccount, disableAccount };
+    async function listAbnormalAccounts() {
+      const accounts = await listAccounts();
+      const abnormal = [];
+      for (const account of accounts) {
+        const id = account?.id;
+        if (id === undefined || id === null) continue;
+        const result = await probeAccount(id);
+        if (result.abnormal) abnormal.push(account);
+      }
+      return abnormal;
+    }
+
+    return { origin, authHeader, listAccounts, probeAccount, disableAccount, listAbnormalAccounts };
   }
 
   return { createCpaAdminClient, CpaAdminError, DEFAULTS };

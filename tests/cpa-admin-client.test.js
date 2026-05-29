@@ -101,3 +101,22 @@ test('disableAccount throws on non-2xx', async () => {
   const client = createCpaAdminClient({ fetchImpl, baseUrl: 'https://h.x/', managementKey: 'K' });
   await assert.rejects(() => client.disableAccount(9, 'sms-failed'), /HTTP 403/);
 });
+
+test('listAbnormalAccounts returns only accounts whose probe is abnormal', async () => {
+  // 第1次 listAccounts；之后每个账号一次 probe
+  const { fetchImpl } = makeFetchStub([
+    { status: 200, body: { data: [{ id: 1, email: 'a@x.com' }, { id: 2, email: 'b@y.com' }] } },
+    { status: 401, body: {} }, // id 1 异常
+    { status: 200, body: {} }, // id 2 正常
+  ]);
+  const client = createCpaAdminClient({ fetchImpl, baseUrl: 'https://h.x/', managementKey: 'K' });
+  const abnormal = await client.listAbnormalAccounts();
+  assert.equal(abnormal.length, 1);
+  assert.deepEqual(abnormal[0], { id: 1, email: 'a@x.com' });
+});
+
+test('listAbnormalAccounts on empty list returns empty array', async () => {
+  const { fetchImpl } = makeFetchStub([{ status: 200, body: { data: [] } }]);
+  const client = createCpaAdminClient({ fetchImpl, baseUrl: 'https://h.x/', managementKey: 'K' });
+  assert.deepEqual(await client.listAbnormalAccounts(), []);
+});
