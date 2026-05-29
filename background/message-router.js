@@ -95,6 +95,8 @@
       testHotmailAccountMailAccess,
       upsertHotmailAccount,
       verifyHotmailAccount,
+      reauthFetchAbnormal,
+      reauthRunAccount,
     } = deps;
 
     async function appendManualAccountRunRecordIfNeeded(status, stateOverride = null, reason = '') {
@@ -710,6 +712,28 @@
 
         case 'ACCOUNTS_REEXPORT': {
           return await reexportAccountsFile();
+        }
+
+        case 'REAUTH_FETCH_ABNORMAL': {
+          if (typeof reauthFetchAbnormal !== 'function') {
+            throw new Error('重新授权功能未就绪：缺少 reauthFetchAbnormal。');
+          }
+          const accounts = await reauthFetchAbnormal();
+          return { ok: true, accounts: Array.isArray(accounts) ? accounts : [] };
+        }
+
+        case 'REAUTH_RUN_ACCOUNT': {
+          if (typeof reauthRunAccount !== 'function') {
+            throw new Error('重新授权功能未就绪：缺少 reauthRunAccount。');
+          }
+          const email = String(message.payload?.email || '').trim();
+          if (!email) {
+            throw new Error('重新授权需要邮箱。');
+          }
+          const accountIdRaw = message.payload?.accountId;
+          const accountId = accountIdRaw === undefined ? null : accountIdRaw;
+          const result = await reauthRunAccount({ email, accountId });
+          return { ok: true, result };
         }
 
         case 'STOP_FLOW': {
