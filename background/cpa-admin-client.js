@@ -40,7 +40,36 @@
       return { Authorization: `Bearer ${managementKey}` };
     }
 
-    return { origin, authHeader };
+    async function requestJson(path, { method = 'GET', body } = {}) {
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+      try {
+        const response = await fetchImpl(`${origin}${path}`, {
+          method,
+          headers: { 'Content-Type': 'application/json', ...authHeader() },
+          ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+          ...(controller ? { signal: controller.signal } : {}),
+        });
+        return response;
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+
+    async function listAccounts() {
+      const response = await requestJson(DEFAULTS.LIST_PATH);
+      if (!response.ok) {
+        throw new CpaAdminError(`listAccounts HTTP ${response.status}`, `HTTP_${response.status}`);
+      }
+      const payload = await response.json();
+      const items = Array.isArray(payload?.data) ? payload.data
+        : Array.isArray(payload?.list) ? payload.list
+        : Array.isArray(payload) ? payload
+        : [];
+      return items;
+    }
+
+    return { origin, authHeader, listAccounts };
   }
 
   return { createCpaAdminClient, CpaAdminError, DEFAULTS };

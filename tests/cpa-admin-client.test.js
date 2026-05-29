@@ -43,3 +43,21 @@ test('factory throws when managementKey missing', () => {
     /managementKey/
   );
 });
+
+test('listAccounts GETs list path with auth header and returns data array', async () => {
+  const { fetchImpl, calls } = makeFetchStub([
+    { status: 200, body: { data: [{ id: 1, email: 'a@x.com' }, { id: 2, email: 'b@y.com' }] } },
+  ]);
+  const client = createCpaAdminClient({ fetchImpl, baseUrl: 'https://h.x/', managementKey: 'K' });
+  const accounts = await client.listAccounts();
+  assert.equal(accounts.length, 2);
+  assert.deepEqual(accounts[0], { id: 1, email: 'a@x.com' });
+  assert.equal(calls[0].url, 'https://h.x/api/v1/admin/accounts');
+  assert.equal(calls[0].opts.headers.Authorization, 'Bearer K');
+});
+
+test('listAccounts throws CpaAdminError on non-2xx', async () => {
+  const { fetchImpl } = makeFetchStub([{ status: 500, body: {} }]);
+  const client = createCpaAdminClient({ fetchImpl, baseUrl: 'https://h.x/', managementKey: 'K' });
+  await assert.rejects(() => client.listAccounts(), /HTTP 500/);
+});
