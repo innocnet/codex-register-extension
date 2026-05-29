@@ -84,3 +84,20 @@ test('probeAccount returns {error} on unexpected status', async () => {
   assert.equal(result.abnormal, false);
   assert.match(result.error, /503/);
 });
+
+test('disableAccount PUTs status disabled with remark note', async () => {
+  const { fetchImpl, calls } = makeFetchStub([{ status: 200, body: { ok: true } }]);
+  const client = createCpaAdminClient({ fetchImpl, baseUrl: 'https://h.x/', managementKey: 'K' });
+  await client.disableAccount(9, 'sms-failed');
+  assert.equal(calls[0].url, 'https://h.x/api/v1/admin/accounts/9');
+  assert.equal(calls[0].opts.method, 'PUT');
+  const sentBody = JSON.parse(calls[0].opts.body);
+  assert.equal(sentBody.status, 'disabled');
+  assert.equal(sentBody.remark, 'sms-failed');
+});
+
+test('disableAccount throws on non-2xx', async () => {
+  const { fetchImpl } = makeFetchStub([{ status: 403, body: {} }]);
+  const client = createCpaAdminClient({ fetchImpl, baseUrl: 'https://h.x/', managementKey: 'K' });
+  await assert.rejects(() => client.disableAccount(9, 'sms-failed'), /HTTP 403/);
+});

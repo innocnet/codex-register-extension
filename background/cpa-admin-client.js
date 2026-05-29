@@ -76,7 +76,18 @@
       return { abnormal: false, error: `probeAccount HTTP ${response.status}` };
     }
 
-    return { origin, authHeader, listAccounts, probeAccount };
+    async function disableAccount(id, note) {
+      const response = await requestJson(DEFAULTS.DISABLE_PATH(id), {
+        method: 'PUT',
+        body: { status: 'disabled', remark: String(note || '') },
+      });
+      if (!response.ok) {
+        throw new CpaAdminError(`disableAccount HTTP ${response.status}`, `HTTP_${response.status}`);
+      }
+      return { disabled: true };
+    }
+
+    return { origin, authHeader, listAccounts, probeAccount, disableAccount };
   }
 
   return { createCpaAdminClient, CpaAdminError, DEFAULTS };
