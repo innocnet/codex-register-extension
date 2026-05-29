@@ -69,7 +69,14 @@
       return items;
     }
 
-    return { origin, authHeader, listAccounts };
+    async function probeAccount(id) {
+      const response = await requestJson(DEFAULTS.REFRESH_PATH(id), { method: 'POST' });
+      if (response.status === 401) return { abnormal: true };
+      if (response.ok) return { abnormal: false };
+      return { abnormal: false, error: `probeAccount HTTP ${response.status}` };
+    }
+
+    return { origin, authHeader, listAccounts, probeAccount };
   }
 
   return { createCpaAdminClient, CpaAdminError, DEFAULTS };

@@ -61,3 +61,26 @@ test('listAccounts throws CpaAdminError on non-2xx', async () => {
   const client = createCpaAdminClient({ fetchImpl, baseUrl: 'https://h.x/', managementKey: 'K' });
   await assert.rejects(() => client.listAccounts(), /HTTP 500/);
 });
+
+test('probeAccount returns abnormal=true on 401', async () => {
+  const { fetchImpl, calls } = makeFetchStub([{ status: 401, body: {} }]);
+  const client = createCpaAdminClient({ fetchImpl, baseUrl: 'https://h.x/', managementKey: 'K' });
+  const result = await client.probeAccount(7);
+  assert.deepEqual(result, { abnormal: true });
+  assert.equal(calls[0].url, 'https://h.x/api/v1/admin/accounts/7/refresh');
+  assert.equal(calls[0].opts.method, 'POST');
+});
+
+test('probeAccount returns abnormal=false on 2xx', async () => {
+  const { fetchImpl } = makeFetchStub([{ status: 200, body: { ok: true } }]);
+  const client = createCpaAdminClient({ fetchImpl, baseUrl: 'https://h.x/', managementKey: 'K' });
+  assert.deepEqual(await client.probeAccount(7), { abnormal: false });
+});
+
+test('probeAccount returns {error} on unexpected status', async () => {
+  const { fetchImpl } = makeFetchStub([{ status: 503, body: {} }]);
+  const client = createCpaAdminClient({ fetchImpl, baseUrl: 'https://h.x/', managementKey: 'K' });
+  const result = await client.probeAccount(7);
+  assert.equal(result.abnormal, false);
+  assert.match(result.error, /503/);
+});
