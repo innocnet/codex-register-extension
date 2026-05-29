@@ -45,8 +45,33 @@
     }
 
     async function handleFailure(err, { email, accountId }) {
-      // 占位：下一任务填充手机验证失败处理
       const message = err && err.message ? err.message : String(err);
+
+      if (isAddPhoneAuthFailure && isAddPhoneAuthFailure(err)) {
+        let id = accountId;
+        if ((id === undefined || id === null) && cpaAdminClient && typeof cpaAdminClient.listAccounts === 'function') {
+          try {
+            const accounts = await cpaAdminClient.listAccounts();
+            const match = accounts.find((a) => String(a?.email || '').toLowerCase() === String(email || '').toLowerCase());
+            if (match) id = match.id;
+          } catch (lookupErr) {
+            await addLog(`重新授权：反查账号 ID 失败（${lookupErr.message}）`, 'warn');
+          }
+        }
+
+        if (id !== undefined && id !== null && cpaAdminClient && typeof cpaAdminClient.disableAccount === 'function') {
+          try {
+            await cpaAdminClient.disableAccount(id, 'sms-failed');
+            await addLog(`账号触发手机二次验证，已在 CPA 禁用并备注 sms-failed：${email}`, 'warn');
+          } catch (disableErr) {
+            await addLog(`重新授权：禁用账号失败（${disableErr.message}）`, 'error');
+          }
+        } else {
+          await addLog(`账号触发手机二次验证，但未找到可禁用的账号 ID：${email}`, 'warn');
+        }
+        return { status: 'sms-failed', email };
+      }
+
       await addLog(`重新授权失败：${email}（${message}）`, 'error');
       return { status: 'failed', email, error: message };
     }

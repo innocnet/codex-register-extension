@@ -44,3 +44,50 @@ test('runForAccount runs steps 7,8,9,10 in order and returns success', async () 
   assert.equal(result.email, 'a@x.com');
   assert.equal(deps._calls.appended.length, 1);
 });
+
+test('runForAccount disables account with sms-failed note on phone-2FA failure', async () => {
+  const deps = makeDeps({
+    isAddPhoneAuthFailure: () => true,
+    executeStep: async (step) => { if (step === 7) throw new Error('add-phone required'); },
+  });
+  const orch = createReauthOrchestrator(deps);
+  const result = await orch.runForAccount({ email: 'a@x.com', accountId: 42 });
+  assert.equal(result.status, 'sms-failed');
+  assert.deepEqual(deps._calls.disabled, [{ id: 42, note: 'sms-failed' }]);
+});
+
+test('phone-2FA failure without accountId looks up id by email before disabling', async () => {
+  const deps = makeDeps({
+    isAddPhoneAuthFailure: () => true,
+    executeStep: async () => { throw new Error('add-phone'); },
+  });
+  deps.cpaAdminClient.listAccounts = async () => [{ id: 99, email: 'a@x.com' }];
+  const orch = createReauthOrchestrator(deps);
+  const result = await orch.runForAccount({ email: 'a@x.com', accountId: null });
+  assert.equal(result.status, 'sms-failed');
+  assert.deepEqual(deps._calls.disabled, [{ id: 99, note: 'sms-failed' }]);
+});
+
+test('phone-2FA failure with no resolvable id logs and skips disable', async () => {
+  const deps = makeDeps({
+    isAddPhoneAuthFailure: () => true,
+    executeStep: async () => { throw new Error('add-phone'); },
+  });
+  deps.cpaAdminClient.listAccounts = async () => [];
+  const orch = createReauthOrchestrator(deps);
+  const result = await orch.runForAccount({ email: 'a@x.com', accountId: null });
+  assert.equal(result.status, 'sms-failed');
+  assert.equal(deps._calls.disabled.length, 0);
+});
+
+test('non-phone failure returns failed without disabling or recording', async () => {
+  const deps = makeDeps({
+    isAddPhoneAuthFailure: () => false,
+    executeStep: async () => { throw new Error('network blip'); },
+  });
+  const orch = createReauthOrchestrator(deps);
+  const result = await orch.runForAccount({ email: 'a@x.com', accountId: 1 });
+  assert.equal(result.status, 'failed');
+  assert.equal(deps._calls.disabled.length, 0);
+  assert.equal(deps._calls.appended.length, 0);
+});
