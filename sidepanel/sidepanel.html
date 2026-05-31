@@ -276,6 +276,35 @@
           <span id="herosms-balance-status" class="data-value mono">未查询</span>
         </div>
       </div>
+
+      <div id="reauth-section" class="data-card hotmail-card">
+        <div class="section-mini-header">
+          <div class="section-mini-copy">
+            <span class="section-label">重新授权（CPA）</span>
+            <span class="data-value">拉取 CPA 异常账号或手动指定邮箱，逐个走邮箱登录重新授权。</span>
+          </div>
+          <div class="section-mini-actions">
+            <button id="btn-reauth-fetch-abnormal" class="btn btn-ghost btn-xs" type="button">拉取异常账号</button>
+          </div>
+        </div>
+        <div class="data-row hotmail-import-row">
+          <span class="data-label">手动指定</span>
+          <div class="hotmail-import-box">
+            <textarea id="reauth-manual-input" class="data-textarea mono"
+              placeholder="每行一个邮箱&#10;a@example.com&#10;b@example.com"></textarea>
+            <button id="btn-reauth-add-manual" class="btn btn-outline btn-sm" type="button">加入列表</button>
+          </div>
+        </div>
+        <div class="data-row hotmail-actions-row">
+          <span class="data-label"></span>
+          <button id="btn-reauth-clear" class="btn btn-ghost btn-xs" type="button">清空列表</button>
+        </div>
+        <div id="reauth-list-shell" class="hotmail-list-shell is-collapsed">
+          <div id="reauth-list" class="hotmail-accounts-list"></div>
+        </div>
+        <div class="hotmail-accounts-meta" id="reauth-meta">就绪</div>
+      </div>
+
       <div class="data-row">
         <span class="data-label">延迟</span>
         <div class="data-inline auto-delay-inline">
