@@ -194,9 +194,13 @@ createReauthOrchestrator({
 
 ## 9. 联调钉死的未知项
 
-实现 `cpa-admin-client.js` 时，先用浏览器打开 CPA 后台抓真实请求确认，再落到代码：
+实现 `cpa-admin-client.js` 时，先用浏览器打开 CPA 后台抓真实请求确认，再落到代码。
 
-1. 管理密钥放哪个请求头。
-2. 账号列表接口路径 + `id` / `email` 字段名。
-3. 「刷新额度」接口路径 + 方法（401 探活）。
-4. 禁用 + 备注接口路径 + 备注字段名。
+**当前实现的占位假设**（位于 `background/cpa-admin-client.js` 顶部 `DEFAULTS` + `authHeader`，联调时只改这一处）：
+
+1. 管理密钥请求头：`Authorization: Bearer <key>`。
+2. 账号列表：`GET /api/v1/admin/accounts`，解析 `data` / `list` / 顶层数组；字段 `id`、`email`。
+3. 「刷新额度」探活：`POST /api/v1/admin/accounts/{id}/refresh`，401 判定异常。
+4. 禁用 + 备注：`PUT /api/v1/admin/accounts/{id}`，body `{ status: 'disabled', remark: 'sms-failed' }`。
+
+> ⚠ 这 4 项为合理推断，**尚未对真实 CPA 后端联调验证**。上线前必须用浏览器抓包核对路径、请求头与字段名，并据实修正 `DEFAULTS` / `authHeader` / `disableAccount` body。单元测试覆盖的是解析与分支逻辑，不能替代真实接口验证。
