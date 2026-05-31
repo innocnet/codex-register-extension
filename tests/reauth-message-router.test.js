@@ -6,6 +6,7 @@ const { createMessageRouter } = require('../background/message-router.js');
 function makeRouter(overrides = {}) {
   const calls = { fetchAbnormal: 0, runArgs: null };
   const deps = {
+    getState: async () => ({ stepStatuses: {}, accountRunHistory: [] }),
     reauthFetchAbnormal: async () => { calls.fetchAbnormal += 1; return [{ id: 1, email: 'a@x.com' }]; },
     reauthRunAccount: async (payload) => { calls.runArgs = payload; return { status: 'success', email: payload.email }; },
   };
