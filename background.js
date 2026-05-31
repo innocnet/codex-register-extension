@@ -8,6 +8,8 @@ importScripts(
   'background/signup-flow-helpers.js',
   'background/message-router.js',
   'background/herosms-client.js',
+  'background/cpa-admin-client.js',
+  'background/reauth-orchestrator.js',
   'background/phone-verify-flow.js',
   'background/accounts-exporter.js',
   'background/verification-flow.js',
@@ -6767,6 +6769,8 @@ const messageRouter = self.MultiPageBackgroundMessageRouter?.createMessageRouter
   testHotmailAccountMailAccess,
   upsertHotmailAccount,
   verifyHotmailAccount,
+  reauthFetchAbnormal: (...args) => reauthFetchAbnormal(...args),
+  reauthRunAccount: (...args) => reauthRunAccount(...args),
 });
 const stepRegistry = self.MultiPageBackgroundStepRegistry?.createStepRegistry(
   stepDefinitions.map((definition) => ({
@@ -6774,6 +6778,52 @@ const stepRegistry = self.MultiPageBackgroundStepRegistry?.createStepRegistry(
     execute: stepExecutorsByKey[definition.key],
   }))
 );
+
+function createConfiguredCpaAdminClient(state) {
+  const factory = self.MultiPageCpaAdminClient?.createCpaAdminClient;
+  if (typeof factory !== 'function') {
+    throw new Error('CPA 客户端模块未加载。');
+  }
+  const baseUrl = String(state?.vpsUrl || '').trim();
+  const managementKey = String(state?.vpsPassword || '').trim();
+  if (!baseUrl) throw new Error('尚未配置 CPA 地址，请先在侧边栏填写。');
+  if (!managementKey) throw new Error('尚未配置 CPA 管理密钥，请先在侧边栏填写。');
+  return factory({ baseUrl, managementKey });
+}
+
+function createConfiguredReauthOrchestrator(cpaAdminClient, fixedPassword) {
+  const factory = self.MultiPageReauthOrchestrator?.createReauthOrchestrator;
+  if (typeof factory !== 'function') {
+    throw new Error('重新授权编排器模块未加载。');
+  }
+  return factory({
+    getState,
+    setState,
+    addLog,
+    executeStep,
+    isAddPhoneAuthFailure,
+    getFixedPassword: () => String(fixedPassword || ''),
+    appendAccountRunRecord: (...args) => appendAndBroadcastAccountRunRecord(...args),
+    cpaAdminClient,
+  });
+}
+
+async function reauthFetchAbnormal() {
+  const state = await getState();
+  const client = createConfiguredCpaAdminClient(state);
+  await addLog('重新授权：正在从 CPA 拉取账号并探测异常状态...', 'info');
+  const abnormal = await client.listAbnormalAccounts();
+  await addLog(`重新授权：发现 ${abnormal.length} 个异常账号。`, 'info');
+  return abnormal;
+}
+
+async function reauthRunAccount({ email, accountId } = {}) {
+  const state = await getState();
+  const client = createConfiguredCpaAdminClient(state);
+  const fixedPassword = String(state?.customPassword || '').trim();
+  const orchestrator = createConfiguredReauthOrchestrator(client, fixedPassword);
+  return orchestrator.runForAccount({ email, accountId });
+}
 
 async function requestOAuthUrlFromPanel(state, options = {}) {
   return panelBridge.requestOAuthUrlFromPanel(state, options);
