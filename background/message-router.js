@@ -1,4 +1,8 @@
 (function attachBackgroundMessageRouter(root, factory) {
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = factory();
+    return;
+  }
   root.MultiPageBackgroundMessageRouter = factory();
 })(typeof self !== 'undefined' ? self : globalThis, function createBackgroundMessageRouterModule() {
   function createMessageRouter(deps = {}) {

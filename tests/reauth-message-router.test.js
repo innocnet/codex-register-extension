@@ -1,7 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { createMessageRouter } = require('../background/message-router.js');
+const routerModule = require('../background/message-router.js');
+const createMessageRouter = routerModule.createMessageRouter;
 
 function makeRouter(overrides = {}) {
   const calls = { fetchAbnormal: 0, runArgs: null };
