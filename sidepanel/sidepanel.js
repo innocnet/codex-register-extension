@@ -4084,6 +4084,151 @@ btnAccountsReexport?.addEventListener('click', () => {
   reexportAccountsFileFromPanel().catch(() => { });
 });
 
+// ===== 重新授权（CPA）=====
+const btnReauthFetchAbnormal = document.getElementById('btn-reauth-fetch-abnormal');
+const btnReauthAddManual = document.getElementById('btn-reauth-add-manual');
+const btnReauthClear = document.getElementById('btn-reauth-clear');
+const reauthManualInput = document.getElementById('reauth-manual-input');
+const reauthListEl = document.getElementById('reauth-list');
+const reauthMetaEl = document.getElementById('reauth-meta');
+
+// 列表项：{ email, accountId(可空), status: 'pending'|'running'|'success'|'failed'|'sms-failed' }
+const reauthAccounts = [];
+
+const REAUTH_STATUS_LABEL = {
+  pending: '待处理',
+  running: '运行中…',
+  success: '✅ 成功',
+  failed: '⚠ 失败',
+  'sms-failed': '⚠ sms-failed',
+};
+
+function setReauthMeta(text) {
+  if (reauthMetaEl) reauthMetaEl.textContent = text;
+}
+
+function upsertReauthAccount(email, accountId) {
+  const key = String(email || '').trim().toLowerCase();
+  if (!key) return false;
+  const existing = reauthAccounts.find((a) => a.email.toLowerCase() === key);
+  if (existing) {
+    if (accountId !== undefined && accountId !== null) existing.accountId = accountId;
+    return false;
+  }
+  reauthAccounts.push({ email: String(email).trim(), accountId: accountId ?? null, status: 'pending' });
+  return true;
+}
+
+function renderReauthList() {
+  if (!reauthListEl) return;
+  if (!reauthAccounts.length) {
+    reauthListEl.innerHTML = '<div class="hotmail-accounts-empty">列表为空</div>';
+    return;
+  }
+  reauthListEl.innerHTML = reauthAccounts.map((acc) => {
+    const statusLabel = REAUTH_STATUS_LABEL[acc.status] || acc.status;
+    const disabled = acc.status === 'running' ? 'disabled' : '';
+    return `
+      <div class="hotmail-account-item" data-reauth-email="${escapeHtml(acc.email)}">
+        <div class="hotmail-account-main">
+          <span class="hotmail-account-email mono">${escapeHtml(acc.email)}</span>
+          <span class="hotmail-account-status">${escapeHtml(statusLabel)}</span>
+        </div>
+        <button class="btn btn-outline btn-xs" type="button"
+          data-reauth-run="${escapeHtml(acc.email)}" ${disabled}>重授权</button>
+      </div>`;
+  }).join('');
+}
+
+async function handleReauthFetchAbnormal() {
+  if (!btnReauthFetchAbnormal) return;
+  btnReauthFetchAbnormal.disabled = true;
+  const prev = btnReauthFetchAbnormal.textContent;
+  btnReauthFetchAbnormal.textContent = '拉取中…';
+  setReauthMeta('正在从 CPA 拉取异常账号…');
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'REAUTH_FETCH_ABNORMAL', source: 'sidepanel' });
+    if (response?.ok) {
+      const accounts = Array.isArray(response.accounts) ? response.accounts : [];
+      accounts.forEach((a) => upsertReauthAccount(a.email, a.id));
+      renderReauthList();
+      setReauthMeta(`拉取到 ${accounts.length} 个异常账号，列表共 ${reauthAccounts.length} 条。`);
+    } else {
+      const msg = response?.error || '拉取失败';
+      setReauthMeta(msg);
+      showToast(`重新授权：${msg}`, 'error');
+    }
+  } catch (error) {
+    setReauthMeta(error?.message || '拉取失败');
+    showToast(`重新授权：${error?.message || '拉取失败'}`, 'error');
+  } finally {
+    btnReauthFetchAbnormal.disabled = false;
+    btnReauthFetchAbnormal.textContent = prev;
+  }
+}
+
+function handleReauthAddManual() {
+  if (!reauthManualInput) return;
+  const lines = String(reauthManualInput.value || '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (!lines.length) {
+    setReauthMeta('请先输入至少一个邮箱。');
+    return;
+  }
+  let added = 0;
+  lines.forEach((email) => { if (upsertReauthAccount(email, null)) added += 1; });
+  reauthManualInput.value = '';
+  renderReauthList();
+  setReauthMeta(`新增 ${added} 个，列表共 ${reauthAccounts.length} 条。`);
+}
+
+function handleReauthClear() {
+  reauthAccounts.length = 0;
+  renderReauthList();
+  setReauthMeta('列表已清空。');
+}
+
+async function runReauthForEmail(email) {
+  const acc = reauthAccounts.find((a) => a.email.toLowerCase() === String(email).toLowerCase());
+  if (!acc || acc.status === 'running') return;
+  acc.status = 'running';
+  renderReauthList();
+  setReauthMeta(`正在重新授权：${acc.email}…`);
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: 'REAUTH_RUN_ACCOUNT',
+      source: 'sidepanel',
+      payload: { email: acc.email, accountId: acc.accountId },
+    });
+    if (response?.ok && response.result) {
+      acc.status = response.result.status || 'failed';
+      setReauthMeta(`${acc.email}：${REAUTH_STATUS_LABEL[acc.status] || acc.status}`);
+    } else {
+      acc.status = 'failed';
+      const msg = response?.error || '失败';
+      setReauthMeta(`${acc.email}：${msg}`);
+      showToast(`重新授权失败：${msg}`, 'error');
+    }
+  } catch (error) {
+    acc.status = 'failed';
+    setReauthMeta(`${acc.email}：${error?.message || '失败'}`);
+    showToast(`重新授权失败：${error?.message || ''}`, 'error');
+  } finally {
+    renderReauthList();
+  }
+}
+
+btnReauthFetchAbnormal?.addEventListener('click', () => { handleReauthFetchAbnormal().catch(() => { }); });
+btnReauthAddManual?.addEventListener('click', handleReauthAddManual);
+btnReauthClear?.addEventListener('click', handleReauthClear);
+reauthListEl?.addEventListener('click', (event) => {
+  const email = event.target?.dataset?.reauthRun;
+  if (email) runReauthForEmail(email).catch(() => { });
+});
+renderReauthList();
+
 inputPassword.addEventListener('input', () => {
   markSettingsDirty(true);
   updateButtonStates();
